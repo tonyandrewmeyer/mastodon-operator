@@ -15,7 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install tox
-        run: pipx install tox
+        run: |
+          pipx install tox
+          pipx inject tox tox-uv
       - name: Run linters
         run: tox -e lint
 
@@ -28,15 +30,6 @@ jobs:
         run: pipx install uv
       - name: uv.lock matches pyproject.toml
         run: uv lock --check
-      - name: requirements.txt matches uv.lock
-        run: |
-          uv export --no-hashes --no-dev --no-emit-project -o /tmp/requirements.txt -q
-          # The header comment embeds the output path, so compare without it.
-          diff -u <(grep -v '^#' requirements.txt) <(grep -v '^#' /tmp/requirements.txt) || {
-            echo "::error::requirements.txt is out of date; regenerate with:" \
-                 "uv export --no-hashes --no-dev --no-emit-project -o requirements.txt"
-            exit 1
-          }
 
   unit:
     name: Unit tests
@@ -44,7 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install tox
-        run: pipx install tox
+        run: |
+          pipx install tox
+          pipx inject tox tox-uv
       - name: Run unit tests
         run: tox -e unit
 

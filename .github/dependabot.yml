@@ -1,7 +1,6 @@
 version: 2
 updates:
-  # Python dependencies (pyproject.toml + uv.lock; requirements.txt is
-  # generated from the lock via `uv export`).
+  # Python dependencies (pyproject.toml + uv.lock).
   - package-ecosystem: "uv"
     directory: "/"
     schedule:

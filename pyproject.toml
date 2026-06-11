@@ -26,6 +26,12 @@ dev = [
     "pytest",
     "coverage[toml]",
     "ruff",
+    "pyright",
+]
+integration = [
+    "pytest",
+    "jubilant",
+    "pytest-jubilant",
 ]
 
 [tool.pytest.ini_options]
