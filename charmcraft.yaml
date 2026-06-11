@@ -20,10 +20,9 @@ description: |
 
 links:
   source:
-    - https://github.com/canonical/mastodon-operator
+    - https://github.com/tonyandrewmeyer/mastodon-operator
   issues:
-    - https://github.com/canonical/mastodon-operator/issues
-  documentation: https://discourse.charmhub.io
+    - https://github.com/tonyandrewmeyer/mastodon-operator/issues
   website:
     - https://joinmastodon.org
 
