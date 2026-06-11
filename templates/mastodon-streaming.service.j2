@@ -1,0 +1,33 @@
+# Managed by the mastodon charm. Manual changes will be overwritten.
+[Unit]
+Description=mastodon-streaming
+After=network.target
+
+[Service]
+Type=simple
+User=mastodon
+WorkingDirectory={{ app_dir }}
+EnvironmentFile={{ app_dir }}/.env.production
+Environment="NODE_ENV=production"
+Environment="PORT=4000"
+ExecStart=/usr/bin/node ./streaming
+TimeoutSec=30
+Restart=always
+LimitNOFILE=65536
+# Security / sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

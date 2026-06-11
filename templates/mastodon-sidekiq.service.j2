@@ -1,0 +1,36 @@
+# Managed by the mastodon charm. Manual changes will be overwritten.
+[Unit]
+Description=mastodon-sidekiq
+After=network.target
+
+[Service]
+Type=simple
+User=mastodon
+WorkingDirectory={{ app_dir }}
+EnvironmentFile={{ app_dir }}/.env.production
+Environment="RAILS_ENV=production"
+Environment="DB_POOL={{ sidekiq_concurrency }}"
+Environment="MALLOC_ARENA_MAX=2"
+Environment="LD_PRELOAD=libjemalloc.so"
+ExecStart={{ rbenv_shims }}/bundle exec sidekiq -c {{ sidekiq_concurrency }}
+TimeoutSec=30
+Restart=always
+LimitNOFILE=65536
+# Security / sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths={{ media_root }}
+
+[Install]
+WantedBy=multi-user.target

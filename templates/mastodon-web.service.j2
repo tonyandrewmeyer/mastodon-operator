@@ -1,0 +1,38 @@
+# Managed by the mastodon charm. Manual changes will be overwritten.
+[Unit]
+Description=mastodon-web
+After=network.target
+
+[Service]
+Type=simple
+User=mastodon
+WorkingDirectory={{ app_dir }}
+EnvironmentFile={{ app_dir }}/.env.production
+Environment="RAILS_ENV=production"
+Environment="PORT=3000"
+Environment="LD_PRELOAD=libjemalloc.so"
+Environment="WEB_CONCURRENCY={{ web_concurrency }}"
+Environment="MAX_THREADS={{ max_threads }}"
+ExecStart={{ rbenv_shims }}/bundle exec puma -C config/puma.rb
+ExecReload=/bin/kill -SIGUSR1 $MAINPID
+TimeoutSec=30
+Restart=always
+LimitNOFILE=65536
+# Security / sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths={{ media_root }}
+
+[Install]
+WantedBy=multi-user.target

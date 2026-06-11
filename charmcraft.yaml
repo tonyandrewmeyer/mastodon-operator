@@ -1,0 +1,218 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+name: mastodon
+type: charm
+title: Mastodon
+summary: Self-hosted, federated social network server (machine charm).
+description: |
+  Mastodon is a free, open-source social network server based on ActivityPub
+  where users can follow friends and discover new ones. This machine charm
+  installs and operates a complete Mastodon deployment: the Puma web server,
+  Sidekiq background workers and the Node.js streaming API, fronted by nginx.
+
+  The charm integrates with the PostgreSQL machine charm for its database,
+  optionally with an external Redis provider and with an S3-compatible object
+  store for media. Without those optional integrations it runs a colocated
+  Redis and stores media on local (Juju-managed) storage.
+
+  Scaling beyond a single unit requires both the redis and s3 integrations so
+  that all units share queues, streaming pub/sub and media.
+
+links:
+  source:
+    - https://github.com/canonical/mastodon-operator
+  issues:
+    - https://github.com/canonical/mastodon-operator/issues
+  documentation: https://discourse.charmhub.io
+  website:
+    - https://joinmastodon.org
+
+base: ubuntu@24.04
+platforms:
+  amd64:
+
+parts:
+  charm:
+    plugin: charm
+    source: .
+    build-packages:
+      - libffi-dev
+      - libssl-dev
+      - pkg-config
+
+assumes:
+  - juju >= 3.4
+
+peers:
+  mastodon-peers:
+    interface: mastodon_peers
+
+requires:
+  database:
+    interface: postgresql_client
+    limit: 1
+  redis:
+    interface: redis
+    limit: 1
+    optional: true
+  s3:
+    interface: s3
+    limit: 1
+    optional: true
+
+provides:
+  website:
+    interface: http
+
+storage:
+  media:
+    type: filesystem
+    description: >
+      Local media storage (user uploads, media cache). Only used when the s3
+      integration is not present.
+    location: /var/lib/mastodon
+
+config:
+  options:
+    server-hostname:
+      type: string
+      default: ""
+      description: >
+        The domain of this Mastodon server (LOCAL_DOMAIN), e.g.
+        "social.example.com". Required. WARNING: changing this after accounts
+        have federated is unsupported by Mastodon and will break federation.
+    web-domain:
+      type: string
+      default: ""
+      description: >
+        Optional WEB_DOMAIN if the web interface is served from a different
+        domain than the account domain (advanced; see Mastodon documentation).
+    version:
+      type: string
+      default: "v4.5.11"
+      description: >
+        Mastodon release tag to deploy (e.g. "v4.5.11"). Changing it on a
+        deployed application performs an in-place upgrade: the new release is
+        built, database migrations run and services restart. Downgrades are
+        not supported.
+    single-user-mode:
+      type: boolean
+      default: false
+      description: >
+        Run in single-user mode: registrations are disabled and the frontpage
+        redirects to the first profile (SINGLE_USER_MODE).
+    default-locale:
+      type: string
+      default: "en"
+      description: Default interface locale (DEFAULT_LOCALE).
+    behind-proxy:
+      type: boolean
+      default: false
+      description: >
+        Set to true when a TLS-terminating reverse proxy or load balancer sits
+        in front of the units. nginx then serves plain HTTP on port 80 without
+        redirecting to HTTPS and trusts the X-Forwarded-Proto header from the
+        proxy. When false (default), nginx serves HTTPS on 443 (using the
+        configured or a self-signed certificate) and redirects port 80.
+    trusted-proxy-ips:
+      type: string
+      default: ""
+      description: >
+        Comma-separated list of additional proxy IPs/CIDRs that Rails should
+        trust for client IP detection (TRUSTED_PROXY_IP). Set this together
+        with behind-proxy when fronted by a load balancer.
+    tls-certificate:
+      type: string
+      default: ""
+      description: >
+        Base64-encoded PEM certificate (full chain) for nginx. If empty, a
+        self-signed certificate is generated. Ignored when behind-proxy=true.
+    tls-key:
+      type: string
+      default: ""
+      description: Base64-encoded PEM private key matching tls-certificate.
+    smtp-server:
+      type: string
+      default: ""
+      description: SMTP relay host used to send e-mail. Empty disables e-mail.
+    smtp-port:
+      type: int
+      default: 587
+      description: SMTP relay port.
+    smtp-login:
+      type: string
+      default: ""
+      description: SMTP username.
+    smtp-password:
+      type: string
+      default: ""
+      description: SMTP password.
+    smtp-from-address:
+      type: string
+      default: ""
+      description: >
+        E-mail address used in the From header of outgoing mail. Defaults to
+        notifications@<server-hostname>.
+    smtp-encryption:
+      type: string
+      default: "starttls"
+      description: 'SMTP transport encryption: one of "none", "starttls", "tls".'
+    web-concurrency:
+      type: int
+      default: 2
+      description: Number of Puma worker processes (WEB_CONCURRENCY).
+    max-threads:
+      type: int
+      default: 5
+      description: Threads per Puma worker / Rails DB pool size (MAX_THREADS).
+    sidekiq-concurrency:
+      type: int
+      default: 25
+      description: Sidekiq worker concurrency (DB_POOL is sized to match).
+    extra-env:
+      type: string
+      default: ""
+      description: >
+        Extra environment variables appended to .env.production, one KEY=VALUE
+        per line. Keys managed by the charm (database, redis, secrets, ...)
+        cannot be overridden and are ignored with a warning in the log.
+
+actions:
+  create-admin:
+    description: >
+      Create a user with the Owner role (instance administrator). The
+      generated password is returned in the action result; the user is
+      created pre-confirmed and approved.
+    params:
+      username:
+        type: string
+        description: Username for the new administrator (without domain).
+      email:
+        type: string
+        description: E-mail address for the new administrator.
+    required:
+      - username
+      - email
+    additionalProperties: false
+  tootctl:
+    description: >
+      Run an arbitrary "tootctl" admin CLI command on this unit, e.g.
+      "accounts refresh --all" or "cache clear". See
+      https://docs.joinmastodon.org/admin/tootctl/ for available commands.
+    params:
+      command:
+        type: string
+        description: Arguments passed to tootctl, as a single string.
+    required:
+      - command
+    additionalProperties: false
+  media-cleanup:
+    description: >
+      Remove locally cached remote media older than the given number of days
+      (tootctl media remove).
+    params:
+      days:
+        type: integer
+        default: 7
+        description: Remove cached media older than this many days.
+    additionalProperties: false

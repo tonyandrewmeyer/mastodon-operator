@@ -1,0 +1,332 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+"""Unit tests for the Mastodon charm (ops Scenario)."""
+
+import pytest
+from ops import testing
+
+from charm import MastodonCharm
+
+HOSTNAME = "social.example.com"
+VERSION = "v4.5.11"
+
+SECRET_CONTENT = {
+    "secret-key-base": "k" * 32,
+    "otp-secret": "o" * 32,
+    "vapid-private-key": "priv",
+    "vapid-public-key": "pub",
+    "ar-deterministic-key": "d" * 32,
+    "ar-key-derivation-salt": "s" * 32,
+    "ar-primary-key": "p" * 32,
+}
+
+DB_DATA = {
+    "endpoints": "10.10.0.5:5432",
+    "username": "dbuser",
+    "password": "dbpass",
+    "database": "mastodon",
+}
+
+
+@pytest.fixture
+def ctx():
+    return testing.Context(MastodonCharm)
+
+
+def db_relation(**kwargs):
+    return testing.Relation(
+        endpoint="database", remote_app_name="postgresql", remote_app_data=DB_DATA, **kwargs
+    )
+
+
+def app_secret():
+    return testing.Secret(
+        tracked_content=SECRET_CONTENT, label="mastodon-app-secrets", owner="app"
+    )
+
+
+def base_state(*, leader=True, secret=None, extra_relations=(), **kwargs):
+    secret = secret or app_secret()
+    peer = testing.PeerRelation(endpoint="mastodon-peers", local_app_data={"secret-id": secret.id})
+    config = {"server-hostname": HOSTNAME}
+    config.update(kwargs.pop("config", {}))
+    return testing.State(
+        leader=leader,
+        config=config,
+        relations={peer, db_relation(), *extra_relations},
+        secrets={secret},
+        **kwargs,
+    )
+
+
+def written_env(workload) -> dict:
+    """Parse the env file text passed to write_env_text into a dict."""
+    workload["write_env_text"].assert_called()
+    text = workload["write_env_text"].call_args[0][0]
+    env = {}
+    for line in text.splitlines():
+        if line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key] = value.strip('"')
+    return env
+
+
+def test_blocked_when_hostname_missing(ctx, workload):
+    state = testing.State(
+        leader=True,
+        relations={testing.PeerRelation(endpoint="mastodon-peers"), db_relation()},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "server-hostname" in out.unit_status.message
+
+
+def test_blocked_when_database_relation_missing(ctx, workload):
+    state = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME},
+        relations={testing.PeerRelation(endpoint="mastodon-peers")},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "database" in out.unit_status.message
+
+
+def test_blocked_on_invalid_version(ctx, workload):
+    state = base_state(config={"version": "latest"})
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "invalid version" in out.unit_status.message
+
+
+def test_blocked_on_partial_tls_config(ctx, workload):
+    state = base_state(config={"tls-certificate": "YWJj"})
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "tls" in out.unit_status.message.lower()
+
+
+def test_waiting_for_database_credentials(ctx, workload):
+    secret = app_secret()
+    peer = testing.PeerRelation(endpoint="mastodon-peers", local_app_data={"secret-id": secret.id})
+    empty_db = testing.Relation(endpoint="database", remote_app_name="postgresql")
+    state = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME},
+        relations={peer, empty_db},
+        secrets={secret},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.WaitingStatus)
+    assert "database" in out.unit_status.message
+    workload["prepare_database"].assert_not_called()
+
+
+def test_non_leader_waits_for_secrets(ctx, workload):
+    state = testing.State(
+        leader=False,
+        config={"server-hostname": HOSTNAME},
+        relations={testing.PeerRelation(endpoint="mastodon-peers"), db_relation()},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.WaitingStatus)
+    assert "leader" in out.unit_status.message
+
+
+def test_leader_generates_secrets(ctx, workload):
+    peer = testing.PeerRelation(endpoint="mastodon-peers")
+    state = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME},
+        relations={peer, db_relation()},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    secret = out.get_secret(label="mastodon-app-secrets")
+    assert set(secret.tracked_content) == set(SECRET_CONTENT)
+    assert out.get_relation(peer.id).local_app_data["secret-id"]
+    env = written_env(workload)
+    assert env["SECRET_KEY_BASE"] == secret.tracked_content["secret-key-base"]
+
+
+def test_active_happy_path(ctx, workload):
+    state = base_state()
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert out.unit_status == testing.ActiveStatus()
+    workload["prepare_database"].assert_called_once()
+    peer = next(r for r in out.relations if r.endpoint == "mastodon-peers")
+    assert peer.local_app_data["migrated-version"] == VERSION
+    assert {port.port for port in out.opened_ports} == {80, 443}
+    assert out.workload_version == VERSION.lstrip("v")
+    env = written_env(workload)
+    assert env["LOCAL_DOMAIN"] == HOSTNAME
+    assert env["DB_HOST"] == "10.10.0.5"
+    assert env["DB_PORT"] == "5432"
+    assert env["DB_USER"] == "dbuser"
+    assert env["DB_PASS"] == "dbpass"
+    # No changes and everything running: no restart needed.
+    workload["restart_services"].assert_not_called()
+    workload["enable_services"].assert_called()
+
+
+def test_restart_when_env_changes(ctx, workload):
+    workload["write_env_text"].return_value = True
+    out = ctx.run(ctx.on.config_changed(), base_state())
+    workload["restart_services"].assert_called_once()
+    assert out.unit_status == testing.ActiveStatus()
+
+
+def test_services_restarted_when_down(ctx, workload):
+    workload["services_running"].return_value = {"mastodon-web": False}
+    ctx.run(ctx.on.config_changed(), base_state())
+    workload["restart_services"].assert_called_once()
+
+
+def test_non_leader_does_not_migrate(ctx, workload):
+    state = base_state(leader=False)
+    out = ctx.run(ctx.on.config_changed(), state)
+    workload["prepare_database"].assert_not_called()
+    assert isinstance(out.unit_status, testing.WaitingStatus)
+    assert "migrations" in out.unit_status.message
+    # Services are not started before migrations have run.
+    workload["restart_services"].assert_not_called()
+
+
+def test_upgrade_builds_and_migrates(ctx, workload):
+    new_version = "v4.5.12"
+    workload["is_release_built"].return_value = False
+    workload["activate_release"].return_value = True
+    workload["installed_version"].return_value = new_version
+    secret = app_secret()
+    peer = testing.PeerRelation(
+        endpoint="mastodon-peers",
+        local_app_data={"secret-id": secret.id, "migrated-version": VERSION},
+    )
+    state = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME, "version": new_version},
+        relations={peer, db_relation()},
+        secrets={secret},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    workload["fetch_app"].assert_called_once_with(new_version)
+    workload["build_app"].assert_called_once_with(new_version)
+    workload["prepare_database"].assert_called_once()
+    workload["restart_services"].assert_called_once()
+    assert out.get_relation(peer.id).local_app_data["migrated-version"] == new_version
+    assert out.unit_status == testing.ActiveStatus()
+
+
+def test_redis_relation_disables_local_redis(ctx, workload):
+    redis = testing.Relation(
+        endpoint="redis",
+        remote_app_name="redis",
+        remote_units_data={0: {"hostname": "10.20.0.7", "port": "6379"}},
+    )
+    ctx.run(ctx.on.config_changed(), base_state(extra_relations=(redis,)))
+    env = written_env(workload)
+    assert env["REDIS_HOST"] == "10.20.0.7"
+    workload["set_local_redis"].assert_called_once_with(enabled=False)
+
+
+def test_local_redis_fallback(ctx, workload):
+    ctx.run(ctx.on.config_changed(), base_state())
+    env = written_env(workload)
+    assert env["REDIS_HOST"] == "127.0.0.1"
+    workload["set_local_redis"].assert_called_once_with(enabled=True)
+
+
+def test_s3_relation_enables_object_storage(ctx, workload):
+    s3 = testing.Relation(
+        endpoint="s3",
+        remote_app_name="s3-integrator",
+        remote_app_data={
+            "bucket": "mastodon",
+            "access-key": "AKIA123",
+            "secret-key": "shhh",
+            "endpoint": "https://s3.example.com",
+            "region": "us-east-1",
+        },
+    )
+    ctx.run(ctx.on.config_changed(), base_state(extra_relations=(s3,)))
+    env = written_env(workload)
+    assert env["S3_ENABLED"] == "true"
+    assert env["S3_BUCKET"] == "mastodon"
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIA123"
+    assert env["S3_ENDPOINT"] == "https://s3.example.com"
+
+
+def test_scaling_requires_redis_and_s3(ctx, workload):
+    state = base_state(planned_units=3)
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "redis" in out.unit_status.message
+    assert "s3" in out.unit_status.message
+    workload["restart_services"].assert_not_called()
+
+
+def test_website_relation_published(ctx, workload):
+    website = testing.Relation(endpoint="website", remote_app_name="haproxy")
+    out = ctx.run(ctx.on.relation_joined(website), base_state(extra_relations=(website,)))
+    data = out.get_relation(website.id).local_unit_data
+    assert data["port"] == "80"
+    assert data["hostname"]
+
+
+def test_database_broken_stops_services(ctx, workload):
+    relation = db_relation()
+    secret = app_secret()
+    peer = testing.PeerRelation(endpoint="mastodon-peers", local_app_data={"secret-id": secret.id})
+    state = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME},
+        relations={peer, relation},
+        secrets={secret},
+    )
+    ctx.run(ctx.on.relation_broken(relation), state)
+    workload["stop_services"].assert_called_once()
+
+
+def test_install_sets_up_machine(ctx, workload):
+    state = testing.State(
+        leader=True,
+        relations={testing.PeerRelation(endpoint="mastodon-peers")},
+    )
+    ctx.run(ctx.on.install(), state)
+    workload["install_packages"].assert_called_once()
+    workload["ensure_user"].assert_called_once()
+    workload["ensure_rbenv"].assert_called_once()
+
+
+def test_create_admin_action(ctx, workload):
+    workload["env_file"].write_text("LOCAL_DOMAIN=x\n")
+    workload["tootctl"].return_value = "OK\nNew password:\nsup3rsecret\n"
+    ctx.run(
+        ctx.on.action("create-admin", params={"username": "admin", "email": "a@b.com"}),
+        base_state(),
+    )
+    assert ctx.action_results["password"] == "sup3rsecret"
+    args = workload["tootctl"].call_args[0][0]
+    assert args[:3] == ["accounts", "create", "admin"]
+    assert "--role" in args
+
+
+def test_tootctl_action(ctx, workload):
+    workload["env_file"].write_text("LOCAL_DOMAIN=x\n")
+    workload["tootctl"].return_value = "cleared"
+    ctx.run(ctx.on.action("tootctl", params={"command": "cache clear"}), base_state())
+    workload["tootctl"].assert_called_once_with(["cache", "clear"])
+    assert ctx.action_results["output"] == "cleared"
+
+
+def test_actions_fail_when_not_ready(ctx, workload):
+    workload["installed_version"].return_value = None
+    with pytest.raises(testing.ActionFailed):
+        ctx.run(ctx.on.action("tootctl", params={"command": "cache clear"}), base_state())
+
+
+def test_media_cleanup_action(ctx, workload):
+    workload["env_file"].write_text("LOCAL_DOMAIN=x\n")
+    ctx.run(ctx.on.action("media-cleanup", params={"days": 3}), base_state())
+    workload["tootctl"].assert_called_once_with(["media", "remove", "--days", "3"])

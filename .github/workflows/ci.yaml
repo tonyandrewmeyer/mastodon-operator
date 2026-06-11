@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "0 8 * * 1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tox
+        run: pipx install tox
+      - name: Run linters
+        run: tox -e lint
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tox
+        run: pipx install tox
+      - name: Run unit tests
+        run: tox -e unit
+
+  pack:
+    name: Pack charm
+    runs-on: ubuntu-24.04
+    needs:
+      - lint
+      - unit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up LXD
+        uses: canonical/setup-lxd@v0.1.2
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+      - name: Pack
+        run: charmcraft pack -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: charm
+          path: "*.charm"

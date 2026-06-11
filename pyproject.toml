@@ -1,0 +1,34 @@
+# Copyright 2026 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+log_cli_level = "INFO"
+pythonpath = ["src", "lib"]
+
+[tool.coverage.run]
+branch = true
+omit = ["lib/*", "tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+extend-exclude = ["lib"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "C", "N", "D", "I001", "UP", "B"]
+ignore = [
+    "D105",  # missing docstring in magic method
+    "D107",  # missing docstring in __init__
+    "E203",
+]
+per-file-ignores = { "tests/*" = ["D100", "D101", "D102", "D103", "D104"] }
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
