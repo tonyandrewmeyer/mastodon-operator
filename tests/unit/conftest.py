@@ -36,6 +36,8 @@ SYSTEM_FUNCTIONS = {
     "stop_services": None,
     "services_running": ALL_RUNNING,
     "prepare_database": None,
+    "run_migrations": None,
+    "configure_cleanup_timer": None,
     "tootctl": "OK",
 }
 

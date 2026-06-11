@@ -4,6 +4,7 @@
 """Unit tests for the Mastodon charm (ops Scenario)."""
 
 import json
+import unittest.mock
 
 import pytest
 from ops import testing
@@ -156,9 +157,13 @@ def test_active_happy_path(ctx, workload):
     state = base_state()
     out = ctx.run(ctx.on.config_changed(), state)
     assert out.unit_status == testing.ActiveStatus()
+    # Fresh database: one-shot schema load; no two-phase migrations needed.
     workload["prepare_database"].assert_called_once()
+    workload["run_migrations"].assert_not_called()
     peer = next(r for r in out.relations if r.endpoint == "mastodon-peers")
     assert peer.local_app_data["migrated-version"] == VERSION
+    assert peer.local_app_data["post-migrated-version"] == VERSION
+    workload["configure_cleanup_timer"].assert_called_once_with(7)
     assert {port.port for port in out.opened_ports} == {80, 443}
     assert out.workload_version == VERSION.lstrip("v")
     env = written_env(workload)
@@ -189,6 +194,7 @@ def test_non_leader_does_not_migrate(ctx, workload):
     state = base_state(leader=False)
     out = ctx.run(ctx.on.config_changed(), state)
     workload["prepare_database"].assert_not_called()
+    workload["run_migrations"].assert_not_called()
     assert isinstance(out.unit_status, testing.WaitingStatus)
     assert "migrations" in out.unit_status.message
     # Services are not started before migrations have run.
@@ -203,7 +209,11 @@ def test_upgrade_builds_and_migrates(ctx, workload):
     secret = app_secret()
     peer = testing.PeerRelation(
         endpoint="mastodon-peers",
-        local_app_data={"secret-id": secret.id, "migrated-version": VERSION},
+        local_app_data={
+            "secret-id": secret.id,
+            "migrated-version": VERSION,
+            "post-migrated-version": VERSION,
+        },
     )
     state = testing.State(
         leader=True,
@@ -214,10 +224,22 @@ def test_upgrade_builds_and_migrates(ctx, workload):
     out = ctx.run(ctx.on.config_changed(), state)
     workload["fetch_app"].assert_called_once_with(new_version)
     workload["build_app"].assert_called_once_with(new_version)
-    workload["prepare_database"].assert_called_once()
+    # Two-phase upgrade: pre-deployment migrations, restart, then the rest.
+    workload["prepare_database"].assert_not_called()
+    assert workload["run_migrations"].call_args_list == [
+        unittest.mock.call(skip_post_deployment=True),
+        unittest.mock.call(),
+    ]
     workload["restart_services"].assert_called_once()
-    assert out.get_relation(peer.id).local_app_data["migrated-version"] == new_version
+    data = out.get_relation(peer.id).local_app_data
+    assert data["migrated-version"] == new_version
+    assert data["post-migrated-version"] == new_version
     assert out.unit_status == testing.ActiveStatus()
+
+
+def test_cleanup_timer_disabled(ctx, workload):
+    ctx.run(ctx.on.config_changed(), base_state(config={"media-cache-retention-days": 0}))
+    workload["configure_cleanup_timer"].assert_called_once_with(0)
 
 
 def test_redis_relation_disables_local_redis(ctx, workload):

@@ -1,0 +1,11 @@
+# Managed by the mastodon charm. Manual changes will be overwritten.
+[Unit]
+Description=Daily Mastodon media cache cleanup
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=3h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -33,6 +33,7 @@ WEBSITE_RELATION = "website"
 DATABASE_NAME = "mastodon"
 SECRETS_LABEL = "mastodon-app-secrets"
 MIGRATED_VERSION_KEY = "migrated-version"
+POST_MIGRATED_VERSION_KEY = "post-migrated-version"
 SECRET_ID_KEY = "secret-id"
 
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
@@ -392,11 +393,20 @@ class MastodonCharm(ops.CharmBase):
             mastodon.ensure_tls_material(hostname, *(tls or (None, None)))
         mastodon.configure_nginx(hostname=hostname, behind_proxy=behind_proxy)
 
+        peer = self._peer_relation
+        assert peer is not None  # checked via _app_secrets above
         if self.unit.is_leader() and self._migrated_version() != version:
-            self.unit.status = ops.MaintenanceStatus("running database migrations")
-            mastodon.prepare_database()
-            peer = self._peer_relation
-            assert peer is not None  # checked via _app_secrets above
+            if self._migrated_version() is None:
+                # Fresh database: load the schema and seeds in one go.
+                self.unit.status = ops.MaintenanceStatus("initializing the database")
+                mastodon.prepare_database()
+                peer.data[self.app][POST_MIGRATED_VERSION_KEY] = version
+            else:
+                # Upgrade: per Mastodon's upgrade procedure, run only the
+                # migrations that are safe against the still-running old
+                # code; post-deployment migrations follow after the restart.
+                self.unit.status = ops.MaintenanceStatus("running pre-deployment migrations")
+                mastodon.run_migrations(skip_post_deployment=True)
             peer.data[self.app][MIGRATED_VERSION_KEY] = version
 
         if self._migrated_version() == version:
@@ -406,6 +416,16 @@ class MastodonCharm(ops.CharmBase):
             if release_changed or env_changed or units_changed or not all(running.values()):
                 self.unit.status = ops.MaintenanceStatus("restarting Mastodon services")
                 mastodon.restart_services()
+            mastodon.configure_cleanup_timer(int(self.config["media-cache-retention-days"]))
+
+        if (
+            self.unit.is_leader()
+            and self._migrated_version() == version
+            and peer.data[self.app].get(POST_MIGRATED_VERSION_KEY) != version
+        ):
+            self.unit.status = ops.MaintenanceStatus("running post-deployment migrations")
+            mastodon.run_migrations()
+            peer.data[self.app][POST_MIGRATED_VERSION_KEY] = version
 
         self.unit.set_ports(80, 443)
         self.unit.set_workload_version(version.lstrip("v"))

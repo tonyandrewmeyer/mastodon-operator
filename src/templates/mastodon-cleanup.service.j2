@@ -1,0 +1,17 @@
+# Managed by the mastodon charm. Manual changes will be overwritten.
+[Unit]
+Description=Mastodon scheduled media cache cleanup
+After=network.target
+
+[Service]
+Type=oneshot
+User=mastodon
+WorkingDirectory={{ app_dir }}
+EnvironmentFile={{ app_dir }}/.env.production
+Environment="RAILS_ENV=production"
+Environment="LD_PRELOAD=libjemalloc.so"
+ExecStart={{ rbenv_shims }}/bundle exec bin/tootctl media remove --days {{ retention_days }}
+ExecStart={{ rbenv_shims }}/bundle exec bin/tootctl preview_cards remove --days {{ preview_retention_days }}
+TimeoutSec=3600
+Nice=10
+IOSchedulingClass=idle

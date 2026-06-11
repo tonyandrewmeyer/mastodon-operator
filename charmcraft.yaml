@@ -191,6 +191,15 @@ config:
       type: int
       default: 25
       description: Sidekiq worker concurrency (DB_POOL is sized to match).
+    media-cache-retention-days:
+      type: int
+      default: 7
+      description: >
+        Days to keep locally cached remote media. A daily systemd timer runs
+        "tootctl media remove" with this retention (and prunes link-preview
+        cards older than 180 days), per Mastodon's storage optimization
+        guidance. Local user uploads are never touched. Set to 0 to disable
+        scheduled cleanup.
     es-preset:
       type: string
       default: "single_node_cluster"

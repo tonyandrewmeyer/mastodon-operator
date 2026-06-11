@@ -149,12 +149,42 @@ front the units with your own load balancer (TCP/443, or HTTP/80 with
 juju config mastodon version=v4.5.12
 ```
 
-The new release is downloaded and built alongside the running one, the
-symlink is switched, database migrations run (on the leader) and services
-restart. Read the upstream release notes first; downgrades are not
-supported. For zero-downtime upgrades of large instances, see the
-`SKIP_POST_DEPLOYMENT_MIGRATIONS` procedure in the Mastodon docs and run the
-remaining migrations with the `tootctl`/Rails tasks via the `tootctl` action.
+The charm follows Mastodon's documented upgrade procedure: the new release
+is downloaded and built alongside the running one, pre-deployment database
+migrations run (`SKIP_POST_DEPLOYMENT_MIGRATIONS=true`, safe against the
+old code), the `live` symlink is switched and services restart onto the
+new release, and the remaining post-deployment migrations run last. Read
+the upstream release notes first — some releases have extra steps (use the
+`tootctl` action for those); downgrades are not supported. The previous
+release directory is kept on disk for inspection.
+
+### Scheduled maintenance
+
+A daily systemd timer prunes cached remote media older than
+`media-cache-retention-days` (default 7) and link-preview cards older than
+180 days, per Mastodon's storage optimization guidance. Local user uploads
+are never touched; set the option to 0 to disable. One-off maintenance
+(`tootctl media remove-orphans`, `accounts cull`, `cache recount`, ...)
+is available through the `tootctl` action.
+
+When the colocated Redis is used, the charm enables append-only
+persistence so queued Sidekiq jobs survive a crash or reboot.
+
+### Backup and restore
+
+What to back up, and where it lives:
+
+| Data | Where | How |
+| --- | --- | --- |
+| PostgreSQL | postgresql application | Use the postgresql charm's backup actions / `s3-parameters` integration. |
+| Secrets (`SECRET_KEY_BASE`, OTP, VAPID, encryption keys) | Juju app secret | `juju show-secret mastodon-app-secrets --reveal` — store the output securely. **Without these, the database backup is unusable** (2FA, push, encrypted columns). |
+| Media | S3 bucket, or the `media` Juju storage | Bucket versioning/replication, or snapshot the storage volume. |
+| Redis | colocated (or external) | Optional: only volatile queues/caches are lost; home feeds are rebuilt with `tootctl feeds build`. |
+
+To restore: deploy the charm, restore the PostgreSQL backup into the new
+database, recreate the app secret content before the first start (or
+replace the generated secret's content with the saved values via
+`juju update-secret`), reattach media, and run `tootctl feeds build`.
 
 ## Actions
 

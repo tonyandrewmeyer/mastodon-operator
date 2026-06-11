@@ -185,3 +185,18 @@ def test_templates_render():
         )
         assert f"Description={service}" in unit
         assert "EnvironmentFile=/home/mastodon/live/.env.production" in unit
+
+    cleanup = mastodon._render_template(
+        "mastodon-cleanup.service.j2",
+        {
+            "app_dir": "/home/mastodon/live",
+            "rbenv_shims": "/home/mastodon/.rbenv/shims",
+            "retention_days": 7,
+            "preview_retention_days": 180,
+        },
+    )
+    assert "tootctl media remove --days 7" in cleanup
+    assert "tootctl preview_cards remove --days 180" in cleanup
+    timer = mastodon._render_template("mastodon-cleanup.timer.j2", {})
+    assert "OnCalendar=daily" in timer
+    assert "Persistent=true" in timer

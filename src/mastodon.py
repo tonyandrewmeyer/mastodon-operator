@@ -14,6 +14,7 @@ import base64
 import logging
 import os
 import pwd
+import re
 import secrets
 import shlex
 import shutil
@@ -60,6 +61,10 @@ SERVICES = ("mastodon-web", "mastodon-sidekiq", "mastodon-streaming")
 WEB_METRICS_PORT = 9394
 SIDEKIQ_METRICS_PORT = 9395
 STREAMING_PORT = 4000
+
+CLEANUP_UNIT = "mastodon-cleanup"
+# Upstream default for `tootctl preview_cards remove`.
+PREVIEW_CARDS_RETENTION_DAYS = 180
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
@@ -661,6 +666,37 @@ def install_systemd_units(
     return changed
 
 
+def configure_cleanup_timer(retention_days: int) -> None:
+    """Install (or remove) the daily media cache cleanup timer.
+
+    Per Mastodon's storage optimization guidance, cached remote media and
+    old link-preview cards are pruned on a schedule; local user uploads are
+    never touched. retention_days <= 0 disables the timer.
+    """
+    from charmlibs import systemd
+
+    service_path = SYSTEMD_DIR / f"{CLEANUP_UNIT}.service"
+    timer_path = SYSTEMD_DIR / f"{CLEANUP_UNIT}.timer"
+    if retention_days <= 0:
+        if timer_path.exists() or service_path.exists():
+            systemd.service_disable("--now", f"{CLEANUP_UNIT}.timer")
+            timer_path.unlink(missing_ok=True)
+            service_path.unlink(missing_ok=True)
+            systemd.daemon_reload()
+        return
+    context = {
+        "app_dir": str(APP_DIR),
+        "rbenv_shims": str(RBENV_ROOT / "shims"),
+        "retention_days": retention_days,
+        "preview_retention_days": PREVIEW_CARDS_RETENTION_DAYS,
+    }
+    changed = _write_file(service_path, _render_template(f"{CLEANUP_UNIT}.service.j2", context))
+    changed |= _write_file(timer_path, _render_template(f"{CLEANUP_UNIT}.timer.j2", context))
+    if changed:
+        systemd.daemon_reload()
+    systemd.service_enable("--now", f"{CLEANUP_UNIT}.timer")
+
+
 def ensure_tls_material(hostname: str, cert_pem: str | None, key_pem: str | None) -> bool:
     """Install the given TLS cert/key, or a self-signed one. True if changed."""
     TLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -754,11 +790,36 @@ def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_redis_durability() -> None:
+    """Enable AOF persistence on the colocated Redis.
+
+    Sidekiq queues live in Redis; with the default snapshot-only persistence
+    a crash loses queued jobs (deliveries, e-mails). Mastodon's docs
+    recommend appendonly for production.
+    """
+    from charmlibs import systemd
+
+    conf = Path("/etc/redis/redis.conf")
+    if not conf.exists():
+        return
+    text = conf.read_text()
+    if re.search(r"^appendonly yes", text, flags=re.M):
+        return
+    new_text, count = re.subn(r"^appendonly no", "appendonly yes", text, count=1, flags=re.M)
+    if not count:
+        new_text = text + "\nappendonly yes\n"
+    conf.write_text(new_text)
+    logger.info("Enabled Redis appendonly persistence")
+    if systemd.service_running("redis-server"):
+        systemd.service_restart("redis-server")
+
+
 def set_local_redis(enabled: bool) -> None:
     """Start or stop the colocated redis-server."""
     from charmlibs import systemd
 
     if enabled:
+        _ensure_redis_durability()
         systemd.service_enable("redis-server")
         if not systemd.service_running("redis-server"):
             systemd.service_start("redis-server")
@@ -815,6 +876,24 @@ def prepare_database() -> None:
         ["bundle", "exec", "rails", "db:prepare"],
         as_mastodon=True,
         cwd=APP_DIR,
+        timeout=3600,
+    )
+
+
+def run_migrations(*, skip_post_deployment: bool = False) -> None:
+    """Run database migrations, optionally excluding post-deployment ones.
+
+    Mastodon's upgrade procedure runs migrations in two phases: with
+    SKIP_POST_DEPLOYMENT_MIGRATIONS=true before the new code is started
+    (these are safe against the old code), and the remaining post-deployment
+    migrations once the services run the new release.
+    """
+    env = {"SKIP_POST_DEPLOYMENT_MIGRATIONS": "true"} if skip_post_deployment else {}
+    _run(
+        ["bundle", "exec", "rails", "db:migrate"],
+        as_mastodon=True,
+        cwd=APP_DIR,
+        env=env,
         timeout=3600,
     )
 
