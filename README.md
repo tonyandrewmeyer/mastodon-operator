@@ -1,5 +1,16 @@
 # Mastodon machine charm
 
+> [!WARNING]
+> **Experimental / alpha — do not rely on this charm.**
+> This charm was built end-to-end by **Claude Fable 5** (Anthropic's AI
+> model, via Claude Code) in a sandbox VM, with a human directing the work
+> but not reviewing every line. It has been deploy-tested against a single
+> local Juju/LXD environment only. It has never run a production Mastodon
+> instance, has not had a security review, and is not maintained or
+> endorsed by anyone. Treat it as a reference/prototype: read the code
+> before using it for anything you care about. The complete build
+> transcripts are in [docs/transcripts](docs/transcripts/).
+
 [Mastodon](https://joinmastodon.org) is a free, open-source federated social
 network server based on ActivityPub. This [Juju](https://juju.is) machine
 charm installs and operates a complete Mastodon deployment on Ubuntu 24.04:
