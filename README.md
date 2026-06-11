@@ -29,7 +29,8 @@ unit (or your load balancer) and create the first administrator:
 juju run mastodon/0 create-admin username=admin email=admin@example.com
 ```
 
-The action returns the generated password; log in and rotate it.
+The action returns the generated password; log in and rotate it. Mastodon
+validates that the e-mail domain resolves in DNS, so use a real domain.
 
 > **Warning**: `server-hostname` is permanent. Changing the domain of a
 > Mastodon server after it has federated is unsupported and breaks the
@@ -68,6 +69,20 @@ juju integrate mastodon <redis-provider>   # any charm providing the redis inter
 
 Without these integrations the charm uses a colocated `redis-server` and
 stores media on the `media` Juju storage volume.
+
+### Full-text search (Elasticsearch)
+
+Integrate any charm providing the `elasticsearch` interface, then build the
+indices once:
+
+```bash
+juju integrate mastodon <elasticsearch-provider>
+juju run mastodon/leader tootctl command="search deploy"
+```
+
+Tune `es-preset` (`single_node_cluster`, `small_cluster`, `large_cluster`)
+to match the cluster. For authenticated clusters, set `ES_USER`/`ES_PASS`
+(and `ES_CA_FILE` if needed) through `extra-env`.
 
 ### Scaling
 
@@ -113,9 +128,8 @@ See `charmcraft.yaml` for the full list.
 
 ## Limitations
 
-- Elasticsearch (full-text search) integration is not yet supported; set it
-  up manually via `extra-env` if needed.
-- The charm targets Ubuntu 24.04 on amd64.
+- The charm targets Ubuntu 24.04 on amd64 and arm64 (each architecture is
+  built on a host of that architecture).
 
 ## Contributing
 

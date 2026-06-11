@@ -65,10 +65,25 @@ def test_render_env_s3_uri_style():
     assert "S3_OVERRIDE_PATH_STYLE" not in render(s3=s3)
 
 
-def test_extra_env_appended_but_cannot_override_managed():
-    env = render(extra_env="ES_ENABLED=true\nDB_HOST=evil\n# comment\nbroken-line\n")
+def test_render_env_elasticsearch():
+    env = render(es={"host": "es.local", "port": "9201", "preset": "small_cluster"})
     assert env["ES_ENABLED"] == "true"
+    assert env["ES_HOST"] == "es.local"
+    assert env["ES_PORT"] == "9201"
+    assert env["ES_PRESET"] == "small_cluster"
+    # ES auth stays user-settable through extra-env.
+    env = render(es={"host": "es.local"}, extra_env="ES_USER=elastic\nES_PASS=changeme\n")
+    assert env["ES_USER"] == "elastic"
+    assert env["ES_PASS"] == "changeme"
+
+
+def test_extra_env_appended_but_cannot_override_managed():
+    env = render(
+        extra_env="OMNIAUTH_ONLY=true\nDB_HOST=evil\nES_ENABLED=true\n# comment\nbroken\n"
+    )
+    assert env["OMNIAUTH_ONLY"] == "true"
     assert env["DB_HOST"] == "10.0.0.1"
+    assert "ES_ENABLED" not in env  # managed key, override rejected
 
 
 def test_env_file_text_quoting():

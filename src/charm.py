@@ -20,6 +20,7 @@ PEER_RELATION = "mastodon-peers"
 DATABASE_RELATION = "database"
 REDIS_RELATION = "redis"
 S3_RELATION = "s3"
+ELASTICSEARCH_RELATION = "elasticsearch"
 WEBSITE_RELATION = "website"
 DATABASE_NAME = "mastodon"
 SECRETS_LABEL = "mastodon-app-secrets"
@@ -28,6 +29,7 @@ SECRET_ID_KEY = "secret-id"
 
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 SMTP_ENCRYPTION_MODES = ("none", "starttls", "tls")
+ES_PRESETS = ("single_node_cluster", "small_cluster", "large_cluster")
 
 
 class MastodonCharm(ops.CharmBase):
@@ -63,6 +65,9 @@ class MastodonCharm(ops.CharmBase):
         framework.observe(self.on[REDIS_RELATION].relation_changed, self._reconcile)
         framework.observe(self.on[REDIS_RELATION].relation_broken, self._reconcile)
 
+        framework.observe(self.on[ELASTICSEARCH_RELATION].relation_changed, self._reconcile)
+        framework.observe(self.on[ELASTICSEARCH_RELATION].relation_broken, self._reconcile)
+
         framework.observe(self.on[WEBSITE_RELATION].relation_joined, self._reconcile)
 
         framework.observe(self.on.media_storage_attached, self._on_media_storage_attached)
@@ -86,6 +91,8 @@ class MastodonCharm(ops.CharmBase):
             return f'invalid version {version!r}, expected e.g. "v4.5.11"'
         if self.config["smtp-encryption"] not in SMTP_ENCRYPTION_MODES:
             return 'smtp-encryption must be one of "none", "starttls" or "tls"'
+        if str(self.config["es-preset"]).strip() not in ES_PRESETS:
+            return f"es-preset must be one of {', '.join(ES_PRESETS)}"
         tls_cert, tls_key = self.config["tls-certificate"], self.config["tls-key"]
         if bool(tls_cert) != bool(tls_key):
             return "tls-certificate and tls-key must be set together"
@@ -187,6 +194,27 @@ class MastodonCharm(ops.CharmBase):
             return dict(info)
         return None
 
+    def _elasticsearch_info(self) -> dict | None:
+        """Connection info from the elasticsearch relation, or None.
+
+        Supports the legacy elasticsearch interface (host/port in the remote
+        unit databags) as well as providers publishing application data.
+        """
+        relation = self.model.get_relation(ELASTICSEARCH_RELATION)
+        if relation is None or relation.app is None:
+            return None
+        bags = [relation.data[relation.app]]
+        bags += [relation.data[unit] for unit in relation.units]
+        for bag in bags:
+            host = bag.get("host") or bag.get("hostname") or bag.get("ingress-address")
+            if host:
+                return {
+                    "host": host,
+                    "port": bag.get("port") or "9200",
+                    "preset": str(self.config["es-preset"]).strip(),
+                }
+        return None
+
     def _smtp_config(self) -> dict:
         return {
             "server": str(self.config["smtp-server"]).strip(),
@@ -267,6 +295,7 @@ class MastodonCharm(ops.CharmBase):
             redis=redis,
             s3=s3,
             smtp=self._smtp_config(),
+            es=self._elasticsearch_info(),
             trusted_proxy_ips=str(self.config["trusted-proxy-ips"]).strip(),
             extra_env=str(self.config["extra-env"]),
         )

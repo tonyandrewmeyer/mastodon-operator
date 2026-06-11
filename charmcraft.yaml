@@ -30,6 +30,11 @@ links:
 base: ubuntu@24.04
 platforms:
   amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+  arm64:
+    build-on: [arm64]
+    build-for: [arm64]
 
 parts:
   charm:
@@ -57,6 +62,10 @@ requires:
     optional: true
   s3:
     interface: s3
+    limit: 1
+    optional: true
+  elasticsearch:
+    interface: elasticsearch
     limit: 1
     optional: true
 
@@ -169,6 +178,15 @@ config:
       type: int
       default: 25
       description: Sidekiq worker concurrency (DB_POOL is sized to match).
+    es-preset:
+      type: string
+      default: "single_node_cluster"
+      description: >
+        Elasticsearch deployment preset (ES_PRESET), used when the
+        elasticsearch integration is present: one of "single_node_cluster",
+        "small_cluster" or "large_cluster". Controls index replicas and
+        refresh interval. After first relating Elasticsearch, build the
+        indices with the tootctl action: command="search deploy".
     extra-env:
       type: string
       default: ""
@@ -182,7 +200,8 @@ actions:
     description: >
       Create a user with the Owner role (instance administrator). The
       generated password is returned in the action result; the user is
-      created pre-confirmed and approved.
+      created pre-confirmed and approved. Note that Mastodon validates that
+      the e-mail address's domain resolves in DNS.
     params:
       username:
         type: string

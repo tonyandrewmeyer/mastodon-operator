@@ -29,6 +29,10 @@ first unit compiles Ruby and builds Mastodon's assets.
 charmcraft pack
 ```
 
+charmcraft's incremental build cache does not pick up file-mode-only
+changes (e.g. restoring the executable bit on `src/charm.py`); run
+`charmcraft clean` first after such changes.
+
 ## Design notes
 
 - `src/mastodon.py` contains everything that touches the machine (apt,

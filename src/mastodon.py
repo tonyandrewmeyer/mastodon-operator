@@ -119,6 +119,10 @@ MANAGED_ENV_KEYS = frozenset(
         "S3_REGION",
         "S3_ENDPOINT",
         "S3_OVERRIDE_PATH_STYLE",
+        "ES_ENABLED",
+        "ES_HOST",
+        "ES_PORT",
+        "ES_PRESET",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "SMTP_SERVER",
@@ -485,6 +489,7 @@ def render_env(
     redis: dict | None = None,
     s3: dict | None = None,
     smtp: dict | None = None,
+    es: dict | None = None,
     trusted_proxy_ips: str = "",
     extra_env: str = "",
 ) -> dict:
@@ -493,7 +498,9 @@ def render_env(
     `db` requires host, port, dbname, user, password. `redis` requires host
     and port (password optional); None means local Redis. `s3` follows the
     data_platform_libs s3 connection-info keys. `smtp` requires server, port,
-    from_address (login/password/encryption optional).
+    from_address (login/password/encryption optional). `es` requires host
+    (port and preset optional); credentials for authenticated clusters can be
+    supplied through extra-env (ES_USER/ES_PASS are intentionally unmanaged).
     """
     env: dict = {
         "LOCAL_DOMAIN": hostname,
@@ -539,6 +546,13 @@ def render_env(
             pass
         elif s3.get("s3-uri-style") == "host":
             env["S3_OVERRIDE_PATH_STYLE"] = "true"
+
+    if es and es.get("host"):
+        env["ES_ENABLED"] = "true"
+        env["ES_HOST"] = es["host"]
+        env["ES_PORT"] = str(es.get("port") or "9200")
+        if es.get("preset"):
+            env["ES_PRESET"] = es["preset"]
 
     env.update(_smtp_env(smtp, hostname))
 

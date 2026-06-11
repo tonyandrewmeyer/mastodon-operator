@@ -257,6 +257,31 @@ def test_s3_relation_enables_object_storage(ctx, workload):
     assert env["S3_ENDPOINT"] == "https://s3.example.com"
 
 
+def test_elasticsearch_relation_enables_search(ctx, workload):
+    es = testing.Relation(
+        endpoint="elasticsearch",
+        remote_app_name="elasticsearch",
+        remote_units_data={0: {"host": "10.30.0.9", "port": "9200"}},
+    )
+    ctx.run(ctx.on.config_changed(), base_state(extra_relations=(es,)))
+    env = written_env(workload)
+    assert env["ES_ENABLED"] == "true"
+    assert env["ES_HOST"] == "10.30.0.9"
+    assert env["ES_PORT"] == "9200"
+    assert env["ES_PRESET"] == "single_node_cluster"
+
+
+def test_no_elasticsearch_by_default(ctx, workload):
+    ctx.run(ctx.on.config_changed(), base_state())
+    assert "ES_ENABLED" not in written_env(workload)
+
+
+def test_invalid_es_preset_blocks(ctx, workload):
+    out = ctx.run(ctx.on.config_changed(), base_state(config={"es-preset": "huge"}))
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "es-preset" in out.unit_status.message
+
+
 def test_scaling_requires_redis_and_s3(ctx, workload):
     state = base_state(planned_units=3)
     out = ctx.run(ctx.on.config_changed(), state)
