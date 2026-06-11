@@ -38,12 +38,14 @@ platforms:
 
 parts:
   charm:
-    plugin: charm
+    plugin: uv
     source: .
     build-packages:
       - libffi-dev
       - libssl-dev
       - pkg-config
+    build-snaps:
+      - astral-uv
 
 assumes:
   - juju >= 3.4

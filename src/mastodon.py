@@ -54,7 +54,7 @@ TLS_KEY = TLS_DIR / "mastodon.key"
 SYSTEMD_DIR = Path("/etc/systemd/system")
 SERVICES = ("mastodon-web", "mastodon-sidekiq", "mastodon-streaming")
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 # Build dependencies for Ruby and the native gems, plus Mastodon's runtime
 # dependencies, per https://docs.joinmastodon.org/admin/install/
