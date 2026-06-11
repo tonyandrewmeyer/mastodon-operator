@@ -11,6 +11,7 @@ import shlex
 import ops
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequires
 from charms.data_platform_libs.v0.s3 import S3Requirer
+from charms.grafana_agent.v0.cos_agent import COSAgentProvider
 
 import mastodon
 
@@ -42,6 +43,14 @@ class MastodonCharm(ops.CharmBase):
             self, relation_name=DATABASE_RELATION, database_name=DATABASE_NAME
         )
         self.s3 = S3Requirer(self, S3_RELATION, bucket_name=DATABASE_NAME)
+        # grafana-agent (subordinate) ships node metrics and machine logs to
+        # a COS stack and forwards our bundled alert rules.
+        self.cos_agent = COSAgentProvider(
+            self,
+            relation_name="cos-agent",
+            metrics_endpoints=[],
+            refresh_events=[self.on.config_changed, self.on.upgrade_charm],
+        )
 
         framework.observe(self.on.install, self._on_install)
         framework.observe(self.on.upgrade_charm, self._on_install)

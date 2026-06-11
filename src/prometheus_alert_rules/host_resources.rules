@@ -1,0 +1,37 @@
+groups:
+  - name: mastodon-host
+    rules:
+      - alert: MastodonHostMetricsMissing
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Metrics collection on a Mastodon machine is down"
+          description: >
+            The grafana-agent scrape target on {{ $labels.instance }} has been
+            down for 5 minutes. The machine may be unreachable.
+      - alert: MastodonHostLowMemory
+        expr: >
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mastodon machine is low on memory"
+          description: >
+            Less than 10% of memory is available on {{ $labels.instance }}.
+            Puma and Sidekiq may start failing or be OOM-killed.
+      - alert: MastodonHostLowDiskSpace
+        expr: >
+          node_filesystem_avail_bytes{mountpoint="/", fstype!="rootfs"}
+            / node_filesystem_size_bytes{mountpoint="/", fstype!="rootfs"} < 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mastodon machine is low on disk space"
+          description: >
+            Less than 10% of the root filesystem is free on
+            {{ $labels.instance }}. Media storage, Postgres connections and
+            release builds will start failing when the disk fills up.

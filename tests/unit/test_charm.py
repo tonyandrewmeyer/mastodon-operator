@@ -3,6 +3,8 @@
 
 """Unit tests for the Mastodon charm (ops Scenario)."""
 
+import json
+
 import pytest
 from ops import testing
 
@@ -280,6 +282,16 @@ def test_invalid_es_preset_blocks(ctx, workload):
     out = ctx.run(ctx.on.config_changed(), base_state(config={"es-preset": "huge"}))
     assert isinstance(out.unit_status, testing.BlockedStatus)
     assert "es-preset" in out.unit_status.message
+
+
+def test_cos_agent_relation_publishes_config(ctx, workload):
+    cos = testing.Relation(endpoint="cos-agent", remote_app_name="grafana-agent")
+    out = ctx.run(ctx.on.relation_joined(cos), base_state(extra_relations=(cos,)))
+    config = json.loads(out.get_relation(cos.id).local_unit_data["config"])
+    rules = config["metrics_alert_rules"]
+    alerts = [rule["alert"] for group in rules["groups"] for rule in group["rules"]]
+    assert "MastodonHostLowDiskSpace" in alerts
+    assert "MastodonHostLowMemory" in alerts
 
 
 def test_scaling_requires_redis_and_s3(ctx, workload):

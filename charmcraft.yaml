@@ -72,6 +72,9 @@ requires:
 provides:
   website:
     interface: http
+  cos-agent:
+    interface: cos_agent
+    optional: true
 
 storage:
   media:

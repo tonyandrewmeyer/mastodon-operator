@@ -84,6 +84,24 @@ Tune `es-preset` (`single_node_cluster`, `small_cluster`, `large_cluster`)
 to match the cluster. For authenticated clusters, set `ES_USER`/`ES_PASS`
 (and `ES_CA_FILE` if needed) through `extra-env`.
 
+### Observability (COS)
+
+The charm provides a `cos-agent` endpoint for the
+[grafana-agent](https://charmhub.io/grafana-agent) machine subordinate,
+which forwards node metrics, machine logs and the charm's bundled alert
+rules (host down, low memory, low disk) to a
+[COS stack](https://charmhub.io/topics/canonical-observability-stack):
+
+```bash
+juju deploy grafana-agent
+juju integrate mastodon grafana-agent
+# then integrate grafana-agent with COS (typically via cross-model offers)
+```
+
+Mastodon's own application metrics are exposed only as StatsD; pointing
+`STATSD_ADDR` (via `extra-env`) at a statsd-exporter is left to the
+operator for now.
+
 ### Scaling
 
 Scaling to multiple units requires the `redis` and `s3` integrations so all
