@@ -1,0 +1,22 @@
+# Machine provisioning for developing and testing this charm, applied with:
+#   sudo snap install --classic concierge
+#   sudo concierge prepare            # full dev machine: charmcraft + Juju on LXD
+#   sudo concierge prepare --disable-juju   # build-only machine (used by CI's pack job)
+juju:
+  channel: 3.6/stable
+  model-defaults:
+    test-mode: "true"
+    automatically-retry-hooks: "false"
+
+providers:
+  lxd:
+    enable: true
+    bootstrap: true
+
+host:
+  packages:
+    - python3-pip
+    - python3-venv
+  snaps:
+    charmcraft:
+    astral-uv:

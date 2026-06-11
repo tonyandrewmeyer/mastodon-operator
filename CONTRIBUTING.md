@@ -40,6 +40,16 @@ tests). The integration tests deploy the locally packed charm together with
 PostgreSQL on a machine cloud (LXD works well) and take a long time: the
 first unit compiles Ruby and builds Mastodon's assets.
 
+To provision a machine with everything the integration tests need
+(charmcraft, LXD and a bootstrapped Juju controller), use
+[concierge](https://github.com/canonical/concierge) with the config in this
+repository:
+
+```bash
+sudo snap install --classic concierge
+sudo concierge prepare
+```
+
 ## Building
 
 ```bash
