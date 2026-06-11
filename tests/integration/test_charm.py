@@ -1,4 +1,4 @@
-# Copyright 2026 Canonical Ltd.
+# Copyright 2026 Tony Meyer
 # See LICENSE file for licensing details.
 
 """Integration tests for the Mastodon machine charm (jubilant).
