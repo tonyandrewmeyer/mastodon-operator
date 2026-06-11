@@ -4,6 +4,12 @@ annotated-types==0.7.0
     # via pydantic
 cffi==2.0.0 ; platform_python_implementation != 'PyPy'
     # via cryptography
+charmlibs-apt==1.0.0.post0
+    # via mastodon-charm
+charmlibs-passwd==1.0.1
+    # via mastodon-charm
+charmlibs-systemd==1.0.0
+    # via mastodon-charm
 cosl==1.9.1
     # via mastodon-charm
 cryptography==48.0.1
@@ -13,7 +19,9 @@ jinja2==3.1.6
 markupsafe==3.0.3
     # via jinja2
 opentelemetry-api==1.42.1
-    # via ops
+    # via
+    #   charmlibs-apt
+    #   ops
 ops==3.7.1
     # via
     #   cosl

@@ -257,7 +257,7 @@ class MastodonCharm(ops.CharmBase):
         mastodon.stop_services()
 
     def _on_media_storage_attached(self, _event: ops.EventBase) -> None:
-        from charms.operator_libs_linux.v0 import passwd
+        from charmlibs import passwd
 
         if passwd.user_exists(mastodon.USER):
             mastodon.ensure_media_dirs()

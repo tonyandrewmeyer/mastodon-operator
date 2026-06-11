@@ -236,7 +236,7 @@ def _render_template(name: str, context: dict) -> str:
 
 def install_packages() -> None:
     """Install all system dependencies, including Node.js from Nodesource."""
-    from charms.operator_libs_linux.v0 import apt
+    from charmlibs import apt
 
     _setup_nodesource()
     apt.update()
@@ -268,7 +268,7 @@ def _setup_nodesource() -> None:
 
 def ensure_user() -> None:
     """Create the mastodon system user and base directories."""
-    from charms.operator_libs_linux.v0 import passwd
+    from charmlibs import passwd
 
     passwd.add_user(USER, home_dir=str(HOME), system_user=True, create_home=True)
     # nginx (www-data) must be able to traverse into the app's public/ dir.
@@ -623,7 +623,7 @@ def install_systemd_units(
     *, web_concurrency: int, max_threads: int, sidekiq_concurrency: int
 ) -> bool:
     """Render the three service units. Returns True when anything changed."""
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     context = {
         "app_dir": str(APP_DIR),
@@ -693,7 +693,7 @@ def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
     """
     import hashlib
 
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     content = _render_template(
         "nginx.conf.j2",
@@ -734,7 +734,7 @@ def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
 
 def set_local_redis(enabled: bool) -> None:
     """Start or stop the colocated redis-server."""
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     if enabled:
         systemd.service_enable("redis-server")
@@ -748,7 +748,7 @@ def set_local_redis(enabled: bool) -> None:
 
 def enable_services() -> None:
     """Enable all Mastodon services to start at boot."""
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     for service in SERVICES:
         systemd.service_enable(service)
@@ -756,7 +756,7 @@ def enable_services() -> None:
 
 def restart_services() -> None:
     """Restart all Mastodon services."""
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     for service in SERVICES:
         systemd.service_restart(service)
@@ -764,7 +764,7 @@ def restart_services() -> None:
 
 def stop_services() -> None:
     """Stop all running Mastodon services."""
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     for service in SERVICES:
         if systemd.service_running(service):
@@ -773,7 +773,7 @@ def stop_services() -> None:
 
 def services_running() -> dict:
     """Map of service name to whether it is currently active."""
-    from charms.operator_libs_linux.v1 import systemd
+    from charmlibs import systemd
 
     return {service: systemd.service_running(service) for service in SERVICES}
 
