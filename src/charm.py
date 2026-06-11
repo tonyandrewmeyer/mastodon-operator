@@ -12,6 +12,10 @@ import ops
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequires
 from charms.data_platform_libs.v0.s3 import S3Requirer
 from charms.grafana_agent.v0.cos_agent import COSAgentProvider
+from charms.tls_certificates_interface.v4.tls_certificates import (
+    CertificateRequestAttributes,
+    TLSCertificatesRequiresV4,
+)
 
 import mastodon
 
@@ -22,6 +26,7 @@ DATABASE_RELATION = "database"
 REDIS_RELATION = "redis"
 S3_RELATION = "s3"
 ELASTICSEARCH_RELATION = "elasticsearch"
+CERTIFICATES_RELATION = "certificates"
 WEBSITE_RELATION = "website"
 DATABASE_NAME = "mastodon"
 SECRETS_LABEL = "mastodon-app-secrets"
@@ -51,6 +56,15 @@ class MastodonCharm(ops.CharmBase):
             metrics_endpoints=[],
             refresh_events=[self.on.config_changed, self.on.upgrade_charm],
         )
+
+        self.certificates = TLSCertificatesRequiresV4(
+            charm=self,
+            relationship_name=CERTIFICATES_RELATION,
+            certificate_requests=self._certificate_requests(),
+            refresh_events=[self.on.config_changed],
+        )
+        framework.observe(self.certificates.on.certificate_available, self._reconcile)
+        framework.observe(self.on[CERTIFICATES_RELATION].relation_broken, self._reconcile)
 
         framework.observe(self.on.install, self._on_install)
         framework.observe(self.on.upgrade_charm, self._on_install)
@@ -108,6 +122,32 @@ class MastodonCharm(ops.CharmBase):
         if tls_cert and self._decoded_tls() is None:
             return "tls-certificate and tls-key must be valid base64-encoded PEM"
         return None
+
+    def _certificate_requests(self) -> list[CertificateRequestAttributes]:
+        """Certificate request for the configured hostname (and web-domain)."""
+        hostname = str(self.config["server-hostname"]).strip()
+        if not hostname:
+            return []
+        sans = {hostname}
+        web_domain = str(self.config["web-domain"]).strip()
+        if web_domain:
+            sans.add(web_domain)
+        return [CertificateRequestAttributes(common_name=hostname, sans_dns=frozenset(sans))]
+
+    def _relation_tls(self) -> tuple[str, str] | None:
+        """Certificate (full chain) and key from the certificates relation."""
+        if self.model.get_relation(CERTIFICATES_RELATION) is None:
+            return None
+        requests = self._certificate_requests()
+        if not requests:
+            return None
+        cert, key = self.certificates.get_assigned_certificate(certificate_request=requests[0])
+        if cert is None or key is None:
+            return None
+        leaf = str(cert.certificate).strip()
+        chain = [str(c).strip() for c in cert.chain]
+        fullchain = [leaf] + [c for c in chain if c != leaf]
+        return "\n".join(fullchain) + "\n", str(key)
 
     def _decoded_tls(self) -> tuple[str, str] | None:
         """Decode the configured TLS material, or None if unset/invalid."""
@@ -317,7 +357,10 @@ class MastodonCharm(ops.CharmBase):
 
         behind_proxy = bool(self.config["behind-proxy"])
         if not behind_proxy:
-            tls = self._decoded_tls()
+            # Precedence: relation-issued certificate, then config-provided,
+            # then a self-signed fallback (also used while a related
+            # certificate provider has not issued ours yet).
+            tls = self._relation_tls() or self._decoded_tls()
             mastodon.ensure_tls_material(hostname, *(tls or (None, None)))
         mastodon.configure_nginx(hostname=hostname, behind_proxy=behind_proxy)
 

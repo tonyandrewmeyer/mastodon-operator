@@ -70,6 +70,10 @@ requires:
     interface: elasticsearch
     limit: 1
     optional: true
+  certificates:
+    interface: tls-certificates
+    limit: 1
+    optional: true
 
 provides:
   website:

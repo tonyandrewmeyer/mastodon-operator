@@ -645,11 +645,14 @@ def install_systemd_units(
 def ensure_tls_material(hostname: str, cert_pem: str | None, key_pem: str | None) -> bool:
     """Install the given TLS cert/key, or a self-signed one. True if changed."""
     TLS_DIR.mkdir(parents=True, exist_ok=True)
+    marker = TLS_DIR / ".self-signed-cn"
     if cert_pem and key_pem:
         changed = _write_file(TLS_CERT, cert_pem)
         changed |= _write_file(TLS_KEY, key_pem, mode=0o600)
+        # The installed material is no longer self-signed; without this, a
+        # later fallback to self-signed would keep serving the stale cert.
+        marker.unlink(missing_ok=True)
         return changed
-    marker = TLS_DIR / ".self-signed-cn"
     if (
         TLS_CERT.exists()
         and TLS_KEY.exists()

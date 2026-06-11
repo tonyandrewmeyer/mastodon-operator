@@ -284,6 +284,24 @@ def test_invalid_es_preset_blocks(ctx, workload):
     assert "es-preset" in out.unit_status.message
 
 
+def test_relation_tls_preferred_over_self_signed(ctx, workload, monkeypatch):
+    from charm import MastodonCharm
+
+    monkeypatch.setattr(
+        MastodonCharm, "_relation_tls", lambda self: ("RELATION-CERT\n", "RELATION-KEY\n")
+    )
+    out = ctx.run(ctx.on.config_changed(), base_state())
+    workload["ensure_tls_material"].assert_called_once_with(
+        HOSTNAME, "RELATION-CERT\n", "RELATION-KEY\n"
+    )
+    assert out.unit_status == testing.ActiveStatus()
+
+
+def test_self_signed_fallback_without_certificates(ctx, workload):
+    ctx.run(ctx.on.config_changed(), base_state())
+    workload["ensure_tls_material"].assert_called_once_with(HOSTNAME, None, None)
+
+
 def test_cos_agent_relation_publishes_config(ctx, workload):
     cos = testing.Relation(endpoint="cos-agent", remote_app_name="grafana-agent")
     out = ctx.run(ctx.on.relation_joined(cos), base_state(extra_relations=(cos,)))

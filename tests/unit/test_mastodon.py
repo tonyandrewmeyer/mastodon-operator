@@ -99,6 +99,35 @@ def test_env_value_newline_rejected():
         mastodon.env_file_text({"A": "a\nb"})
 
 
+def test_ensure_tls_material_fallback_regenerates(tmp_path, monkeypatch):
+    """After provided certs, falling back to self-signed must regenerate."""
+    tls_dir = tmp_path / "tls"
+    monkeypatch.setattr(mastodon, "TLS_DIR", tls_dir)
+    monkeypatch.setattr(mastodon, "TLS_CERT", tls_dir / "mastodon.crt")
+    monkeypatch.setattr(mastodon, "TLS_KEY", tls_dir / "mastodon.key")
+    monkeypatch.setattr(mastodon.shutil, "chown", lambda *a, **k: None)
+    openssl_calls = []
+
+    def fake_run(cmd, **kwargs):
+        openssl_calls.append(cmd)
+        (tls_dir / "mastodon.crt").write_text("SELF-SIGNED")
+        (tls_dir / "mastodon.key").write_text("SELF-KEY")
+        return ""
+
+    monkeypatch.setattr(mastodon, "_run", fake_run)
+
+    # Self-signed generated initially, then cached.
+    assert mastodon.ensure_tls_material("social.example.com", None, None) is True
+    assert mastodon.ensure_tls_material("social.example.com", None, None) is False
+    assert len(openssl_calls) == 1
+    # Provided (relation/config) certs replace it...
+    assert mastodon.ensure_tls_material("social.example.com", "CERT", "KEY") is True
+    assert (tls_dir / "mastodon.crt").read_text() == "CERT"
+    # ...and removing them regenerates self-signed instead of serving stale.
+    assert mastodon.ensure_tls_material("social.example.com", None, None) is True
+    assert len(openssl_calls) == 2
+
+
 def test_generate_secrets_shapes():
     secrets = mastodon.generate_secrets()
     assert len(secrets["secret-key-base"]) == 128

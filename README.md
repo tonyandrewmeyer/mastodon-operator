@@ -50,14 +50,31 @@ juju config mastodon \
 
 ### TLS
 
-By default nginx listens on 443 with a self-signed certificate (and
-redirects port 80). Either:
+nginx listens on 443 (and redirects port 80). The certificate is chosen
+with the following precedence:
 
-- provide a real certificate: `juju config mastodon
-  tls-certificate="$(base64 -w0 fullchain.pem)" tls-key="$(base64 -w0 privkey.pem)"`, or
-- terminate TLS in front (load balancer / reverse proxy) and set
-  `behind-proxy=true` so nginx serves plain HTTP on port 80 and trusts
-  `X-Forwarded-Proto`. Set `trusted-proxy-ips` to the proxy's addresses.
+1. **`certificates` integration** (`tls-certificates` interface): relate any
+   v4 provider — e.g. the [lego](https://charmhub.io/lego) charm for ACME /
+   Let's Encrypt, or
+   [self-signed-certificates](https://charmhub.io/self-signed-certificates)
+   for internal CAs. The charm requests a certificate for
+   `server-hostname` (plus `web-domain` as a SAN) and rotates nginx
+   automatically on issuance and renewal.
+
+   ```bash
+   juju deploy lego --config email=you@example.com ...
+   juju integrate mastodon lego
+   ```
+
+2. **Config**: `juju config mastodon tls-certificate="$(base64 -w0
+   fullchain.pem)" tls-key="$(base64 -w0 privkey.pem)"`.
+
+3. **Self-signed fallback**, also used while a related provider has not
+   issued the certificate yet.
+
+Alternatively, terminate TLS in front (load balancer / reverse proxy) and
+set `behind-proxy=true` so nginx serves plain HTTP on port 80 and trusts
+`X-Forwarded-Proto`. Set `trusted-proxy-ips` to the proxy's addresses.
 
 ### Object storage and external Redis
 
