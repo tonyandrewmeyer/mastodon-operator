@@ -12,6 +12,7 @@ import ops
 from charms.data_platform_libs.v0.data_interfaces import DatabaseRequires
 from charms.data_platform_libs.v0.s3 import S3Requirer
 from charms.grafana_agent.v0.cos_agent import COSAgentProvider
+from charms.smtp_integrator.v0.smtp import SecretError, SmtpRequires
 from charms.tls_certificates_interface.v4.tls_certificates import (
     CertificateRequestAttributes,
     TLSCertificatesRequiresV4,
@@ -27,6 +28,7 @@ REDIS_RELATION = "redis"
 S3_RELATION = "s3"
 ELASTICSEARCH_RELATION = "elasticsearch"
 CERTIFICATES_RELATION = "certificates"
+SMTP_RELATION = "smtp"
 WEBSITE_RELATION = "website"
 DATABASE_NAME = "mastodon"
 SECRETS_LABEL = "mastodon-app-secrets"
@@ -56,6 +58,10 @@ class MastodonCharm(ops.CharmBase):
             metrics_endpoints=[],
             refresh_events=[self.on.config_changed, self.on.upgrade_charm],
         )
+
+        self.smtp = SmtpRequires(self)
+        framework.observe(self.smtp.on.smtp_data_available, self._reconcile)
+        framework.observe(self.on[SMTP_RELATION].relation_broken, self._reconcile)
 
         self.certificates = TLSCertificatesRequiresV4(
             charm=self,
@@ -265,6 +271,23 @@ class MastodonCharm(ops.CharmBase):
         return None
 
     def _smtp_config(self) -> dict:
+        """SMTP settings; the smtp integration takes precedence over config."""
+        if self.model.get_relation(SMTP_RELATION) is not None:
+            try:
+                data = self.smtp.get_relation_data()
+            except SecretError:
+                logger.exception("Cannot read the SMTP password secret yet")
+                data = None
+            if data is not None:
+                return {
+                    "server": data.host,
+                    "port": data.port,
+                    "login": data.user or "",
+                    "password": data.password or "",
+                    "from_address": str(self.config["smtp-from-address"]).strip(),
+                    "encryption": data.transport_security.value,
+                    "domain": data.domain or "",
+                }
         return {
             "server": str(self.config["smtp-server"]).strip(),
             "port": self.config["smtp-port"],

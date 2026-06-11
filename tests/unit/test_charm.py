@@ -284,6 +284,39 @@ def test_invalid_es_preset_blocks(ctx, workload):
     assert "es-preset" in out.unit_status.message
 
 
+def test_smtp_relation_preferred_over_config(ctx, workload):
+    smtp = testing.Relation(
+        endpoint="smtp",
+        remote_app_name="smtp-integrator",
+        remote_app_data={
+            "host": "relay.example.com",
+            "port": "2525",
+            "transport_security": "tls",
+            "auth_type": "none",
+        },
+    )
+    ctx.run(
+        ctx.on.config_changed(),
+        base_state(extra_relations=(smtp,), config={"smtp-server": "ignored.example.com"}),
+    )
+    env = written_env(workload)
+    assert env["SMTP_SERVER"] == "relay.example.com"
+    assert env["SMTP_PORT"] == "2525"
+    assert env["SMTP_TLS"] == "true"
+    assert "SMTP_LOGIN" not in env
+
+
+def test_smtp_config_fallback(ctx, workload):
+    ctx.run(
+        ctx.on.config_changed(),
+        base_state(config={"smtp-server": "mail.example.com", "smtp-login": "mastodon"}),
+    )
+    env = written_env(workload)
+    assert env["SMTP_SERVER"] == "mail.example.com"
+    assert env["SMTP_LOGIN"] == "mastodon"
+    assert env["SMTP_ENABLE_STARTTLS"] == "auto"
+
+
 def test_relation_tls_preferred_over_self_signed(ctx, workload, monkeypatch):
     from charm import MastodonCharm
 

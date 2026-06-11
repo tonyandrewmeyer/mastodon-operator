@@ -38,8 +38,17 @@ validates that the e-mail domain resolves in DNS, so use a real domain.
 
 ### E-mail
 
-Mastodon requires outgoing e-mail for sign-ups and notifications. Configure
-an SMTP relay:
+Mastodon requires outgoing e-mail for sign-ups and notifications. The
+preferred way is the `smtp` integration with
+[smtp-integrator](https://charmhub.io/smtp-integrator), which keeps the
+relay password in a Juju secret:
+
+```bash
+juju deploy smtp-integrator --config host=smtp.example.com --config port=587 ...
+juju integrate mastodon smtp-integrator:smtp
+```
+
+Alternatively, configure the relay directly:
 
 ```bash
 juju config mastodon \
@@ -47,6 +56,9 @@ juju config mastodon \
     smtp-login=mastodon smtp-password=hunter2 \
     smtp-from-address=notifications@social.example.com
 ```
+
+The integration takes precedence when both are present;
+`smtp-from-address` applies in both cases.
 
 ### TLS
 

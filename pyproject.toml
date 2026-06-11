@@ -16,6 +16,8 @@ dependencies = [
     # For charms.grafana_agent.v0.cos_agent
     "cosl>=0.0.50",
     "pydantic>=2",
+    # For charms.smtp_integrator.v0.smtp
+    "email-validator>=2",
 ]
 
 [dependency-groups]

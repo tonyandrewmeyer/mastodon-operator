@@ -130,6 +130,7 @@ MANAGED_ENV_KEYS = frozenset(
         "SMTP_LOGIN",
         "SMTP_PASSWORD",
         "SMTP_FROM_ADDRESS",
+        "SMTP_DOMAIN",
         "SMTP_TLS",
         "SMTP_ENABLE_STARTTLS",
         "TRUSTED_PROXY_IP",
@@ -573,6 +574,8 @@ def _smtp_env(smtp: dict | None, hostname: str) -> dict:
     if smtp.get("password"):
         env["SMTP_PASSWORD"] = smtp["password"]
     env["SMTP_FROM_ADDRESS"] = smtp.get("from_address") or f"notifications@{hostname}"
+    if smtp.get("domain"):
+        env["SMTP_DOMAIN"] = smtp["domain"]
     encryption = smtp.get("encryption", "starttls")
     if encryption == "tls":
         env["SMTP_TLS"] = "true"
