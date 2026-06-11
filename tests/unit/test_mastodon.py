@@ -150,6 +150,8 @@ def test_templates_render():
             "app_dir": "/home/mastodon/live",
             "tls_cert_path": "/etc/nginx/mastodon-tls/mastodon.crt",
             "tls_key_path": "/etc/nginx/mastodon-tls/mastodon.key",
+            "has_web": True,
+            "has_streaming": True,
         },
     )
     assert "server_name social.example.com;" in nginx
@@ -164,6 +166,8 @@ def test_templates_render():
             "app_dir": "/home/mastodon/live",
             "tls_cert_path": "",
             "tls_key_path": "",
+            "has_web": True,
+            "has_streaming": True,
         },
     )
     assert "listen 443" not in proxied

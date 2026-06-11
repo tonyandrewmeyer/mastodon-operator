@@ -78,12 +78,19 @@ requires:
     interface: smtp
     limit: 1
     optional: true
+  primary:
+    interface: mastodon_cluster
+    limit: 1
+    optional: true
 
 provides:
   website:
     interface: http
   cos-agent:
     interface: cos_agent
+    optional: true
+  cluster:
+    interface: mastodon_cluster
     optional: true
 
 storage:
@@ -117,6 +124,19 @@ config:
         deployed application performs an in-place upgrade: the new release is
         built, database migrations run and services restart. Downgrades are
         not supported.
+    role:
+      type: string
+      default: "all"
+      description: >
+        Which Mastodon services this application runs: "all" (default),
+        "web", "sidekiq" or "streaming". For asymmetric scaling, deploy this
+        charm again with a role and integrate it with the main application:
+        `juju deploy <charm> mastodon-workers --config role=sidekiq` then
+        `juju integrate mastodon:cluster mastodon-workers:primary`.
+        Auxiliary applications (those related via "primary") receive their
+        configuration, secrets and version from the main application and
+        must not be related to the database; the main application then
+        requires the redis and s3 integrations.
     single-user-mode:
       type: boolean
       default: false

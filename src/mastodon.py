@@ -55,6 +55,14 @@ TLS_KEY = TLS_DIR / "mastodon.key"
 SYSTEMD_DIR = Path("/etc/systemd/system")
 SERVICES = ("mastodon-web", "mastodon-sidekiq", "mastodon-streaming")
 
+# Services run by each value of the role config option.
+ROLE_SERVICES = {
+    "all": SERVICES,
+    "web": ("mastodon-web",),
+    "sidekiq": ("mastodon-sidekiq",),
+    "streaming": ("mastodon-streaming",),
+}
+
 # Local Prometheus metrics servers (scraped by grafana-agent via cos-agent).
 # Web and sidekiq each run a prometheus_exporter LocalServer; the streaming
 # server exposes /metrics on its main port.
@@ -340,9 +348,17 @@ def release_dir(version: str) -> Path:
     return RELEASES_DIR / version
 
 
-def is_release_built(version: str) -> bool:
-    """Whether the given release has been fully fetched and built."""
-    return (release_dir(version) / BUILD_MARKER).exists()
+def is_release_built(version: str, role: str = "all") -> bool:
+    """Whether the given release has been built sufficiently for `role`.
+
+    A full build satisfies every role; streaming-only units get by with the
+    much lighter JavaScript-only build.
+    """
+    if (release_dir(version) / BUILD_MARKER).exists():
+        return True
+    if role == "streaming":
+        return (release_dir(version) / f"{BUILD_MARKER}-streaming").exists()
+    return False
 
 
 def installed_version() -> str | None:
@@ -376,30 +392,36 @@ def read_ruby_version(version: str) -> str:
     return (release_dir(version) / ".ruby-version").read_text().strip()
 
 
-def build_app(version: str) -> None:
-    """Install dependencies and precompile assets for a release."""
-    target = release_dir(version)
-    if is_release_built(version):
-        return
-    ensure_ruby(read_ruby_version(version))
+def build_app(version: str, role: str = "all") -> None:
+    """Install dependencies and precompile assets for a release.
 
-    logger.info("Installing Ruby gems for %s", version)
-    _run(
-        ["bundle", "config", "set", "--local", "deployment", "true"],
-        as_mastodon=True,
-        cwd=target,
-    )
-    _run(
-        ["bundle", "config", "set", "--local", "without", "development test"],
-        as_mastodon=True,
-        cwd=target,
-    )
-    _run(
-        ["bundle", "install", "-j", str(os.cpu_count() or 2)],
-        as_mastodon=True,
-        cwd=target,
-        timeout=3600,
-    )
+    Streaming-only units need just the Node.js dependencies; every other
+    role gets the full build (Ruby gems and precompiled assets).
+    """
+    target = release_dir(version)
+    if is_release_built(version, role):
+        return
+    full_build = role != "streaming"
+
+    if full_build:
+        ensure_ruby(read_ruby_version(version))
+        logger.info("Installing Ruby gems for %s", version)
+        _run(
+            ["bundle", "config", "set", "--local", "deployment", "true"],
+            as_mastodon=True,
+            cwd=target,
+        )
+        _run(
+            ["bundle", "config", "set", "--local", "without", "development test"],
+            as_mastodon=True,
+            cwd=target,
+        )
+        _run(
+            ["bundle", "install", "-j", str(os.cpu_count() or 2)],
+            as_mastodon=True,
+            cwd=target,
+            timeout=3600,
+        )
 
     logger.info("Installing JavaScript dependencies for %s", version)
     _run(
@@ -410,14 +432,15 @@ def build_app(version: str) -> None:
         timeout=3600,
     )
 
-    logger.info("Precompiling assets for %s", version)
-    _run(
-        ["bundle", "exec", "rails", "assets:precompile"],
-        as_mastodon=True,
-        cwd=target,
-        env={"SECRET_KEY_BASE_DUMMY": "1", "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"},
-        timeout=3600,
-    )
+    if full_build:
+        logger.info("Precompiling assets for %s", version)
+        _run(
+            ["bundle", "exec", "rails", "assets:precompile"],
+            as_mastodon=True,
+            cwd=target,
+            env={"SECRET_KEY_BASE_DUMMY": "1", "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"},
+            timeout=3600,
+        )
 
     # Media lives on Juju storage (or S3); replace public/system with a link.
     system_dir = target / "public" / "system"
@@ -426,8 +449,9 @@ def build_app(version: str) -> None:
         system_dir.symlink_to(MEDIA_DIR)
         os.lchown(system_dir, pwd.getpwnam(USER).pw_uid, pwd.getpwnam(USER).pw_gid)
 
-    (target / BUILD_MARKER).touch()
-    shutil.chown(target / BUILD_MARKER, USER, GROUP)
+    marker = target / (BUILD_MARKER if full_build else f"{BUILD_MARKER}-streaming")
+    marker.touch()
+    shutil.chown(marker, USER, GROUP)
 
 
 def activate_release(version: str) -> bool:
@@ -642,9 +666,12 @@ def write_env_text(text: str) -> bool:
 
 
 def install_systemd_units(
-    *, web_concurrency: int, max_threads: int, sidekiq_concurrency: int
+    *, role: str, web_concurrency: int, max_threads: int, sidekiq_concurrency: int
 ) -> bool:
-    """Render the three service units. Returns True when anything changed."""
+    """Render the role's service units (removing the others' files).
+
+    Returns True when anything changed.
+    """
     from charmlibs import systemd
 
     context = {
@@ -657,10 +684,19 @@ def install_systemd_units(
         "web_metrics_port": WEB_METRICS_PORT,
         "sidekiq_metrics_port": SIDEKIQ_METRICS_PORT,
     }
+    wanted = ROLE_SERVICES[role]
     changed = False
     for service in SERVICES:
-        content = _render_template(f"{service}.service.j2", context)
-        changed |= _write_file(SYSTEMD_DIR / f"{service}.service", content)
+        unit_path = SYSTEMD_DIR / f"{service}.service"
+        if service in wanted:
+            content = _render_template(f"{service}.service.j2", context)
+            changed |= _write_file(unit_path, content)
+        elif unit_path.exists():
+            if systemd.service_running(service):
+                systemd.service_stop(service)
+            systemd.service_disable(service)
+            unit_path.unlink()
+            changed = True
     if changed:
         systemd.daemon_reload()
     return changed
@@ -741,7 +777,7 @@ def ensure_tls_material(hostname: str, cert_pem: str | None, key_pem: str | None
     return True
 
 
-def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
+def configure_nginx(*, hostname: str, behind_proxy: bool, role: str = "all") -> bool:
     """Render, enable and apply the nginx vhost. Returns True when changed.
 
     A marker records the digest of the configuration nginx last successfully
@@ -753,6 +789,7 @@ def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
 
     from charmlibs import systemd
 
+    services = ROLE_SERVICES[role]
     content = _render_template(
         "nginx.conf.j2",
         {
@@ -761,6 +798,8 @@ def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
             "app_dir": str(APP_DIR),
             "tls_cert_path": str(TLS_CERT),
             "tls_key_path": str(TLS_KEY),
+            "has_web": "mastodon-web" in services,
+            "has_streaming": "mastodon-streaming" in services,
         },
     )
     _write_file(NGINX_SITE, content)
@@ -788,6 +827,18 @@ def configure_nginx(*, hostname: str, behind_proxy: bool) -> bool:
 # ---------------------------------------------------------------------------
 # Service management
 # ---------------------------------------------------------------------------
+
+
+def disable_nginx() -> None:
+    """Stop and disable nginx (for units whose role does not serve HTTP)."""
+    from charmlibs import systemd
+
+    if NGINX_SITE_LINK.exists() or NGINX_SITE_LINK.is_symlink():
+        NGINX_SITE_LINK.unlink()
+    Path("/etc/nginx/.mastodon-charm-applied").unlink(missing_ok=True)
+    if systemd.service_running("nginx"):
+        systemd.service_stop("nginx")
+    systemd.service_disable("nginx")
 
 
 def _ensure_redis_durability() -> None:
@@ -829,19 +880,19 @@ def set_local_redis(enabled: bool) -> None:
             systemd.service_stop("redis-server")
 
 
-def enable_services() -> None:
-    """Enable all Mastodon services to start at boot."""
+def enable_services(role: str = "all") -> None:
+    """Enable the role's Mastodon services to start at boot."""
     from charmlibs import systemd
 
-    for service in SERVICES:
+    for service in ROLE_SERVICES[role]:
         systemd.service_enable(service)
 
 
-def restart_services() -> None:
-    """Restart all Mastodon services."""
+def restart_services(role: str = "all") -> None:
+    """Restart the role's Mastodon services."""
     from charmlibs import systemd
 
-    for service in SERVICES:
+    for service in ROLE_SERVICES[role]:
         systemd.service_restart(service)
 
 
@@ -850,15 +901,15 @@ def stop_services() -> None:
     from charmlibs import systemd
 
     for service in SERVICES:
-        if systemd.service_running(service):
+        if (SYSTEMD_DIR / f"{service}.service").exists() and systemd.service_running(service):
             systemd.service_stop(service)
 
 
-def services_running() -> dict:
-    """Map of service name to whether it is currently active."""
+def services_running(role: str = "all") -> dict:
+    """Map of the role's service names to whether they are active."""
     from charmlibs import systemd
 
-    return {service: systemd.service_running(service) for service in SERVICES}
+    return {service: systemd.service_running(service) for service in ROLE_SERVICES[role]}
 
 
 # ---------------------------------------------------------------------------

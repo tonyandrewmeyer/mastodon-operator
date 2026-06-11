@@ -137,8 +137,32 @@ some overhead.
 
 ### Scaling
 
-Scaling to multiple units requires the `redis` and `s3` integrations so all
-units share queues, streaming pub/sub and media; the charm blocks otherwise.
+Scaling out requires the `redis` and `s3` integrations so all units share
+queues, streaming pub/sub and media; the charm blocks otherwise. Two shapes
+are supported:
+
+**Uniform**: `juju add-unit mastodon` — every unit runs web, Sidekiq and
+streaming behind your load balancer.
+
+**Asymmetric (roles)**: deploy the charm again per role and integrate it
+with the main application; auxiliary applications receive configuration,
+secrets and the release version from the primary and need no database or
+other integrations of their own:
+
+```bash
+juju deploy ./mastodon_amd64.charm mastodon-sidekiq --config role=sidekiq
+juju integrate mastodon:cluster mastodon-sidekiq:primary
+juju add-unit -n 3 mastodon-sidekiq
+```
+
+Roles: `web` (Puma + nginx), `sidekiq` (workers only, no open ports),
+`streaming` (Node streaming API + nginx; skips the Ruby build entirely).
+Your load balancer must route `/api/v1/streaming` to streaming-capable
+units and everything else to web units. Upgrades stay coordinated: set
+`version` on the primary only — auxiliaries follow automatically, and
+post-deployment migrations wait until every auxiliary unit runs the new
+release.
+
 A proxy charm can be integrated via the `website` interface, or you can
 front the units with your own load balancer (TCP/443, or HTTP/80 with
 `behind-proxy=true`).

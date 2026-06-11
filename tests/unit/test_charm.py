@@ -223,7 +223,7 @@ def test_upgrade_builds_and_migrates(ctx, workload):
     )
     out = ctx.run(ctx.on.config_changed(), state)
     workload["fetch_app"].assert_called_once_with(new_version)
-    workload["build_app"].assert_called_once_with(new_version)
+    workload["build_app"].assert_called_once_with(new_version, "all")
     # Two-phase upgrade: pre-deployment migrations, restart, then the rest.
     workload["prepare_database"].assert_not_called()
     assert workload["run_migrations"].call_args_list == [
@@ -447,3 +447,180 @@ def test_media_cleanup_action(ctx, workload):
     workload["env_file"].write_text("LOCAL_DOMAIN=x\n")
     ctx.run(ctx.on.action("media-cleanup", params={"days": 3}), base_state())
     workload["tootctl"].assert_called_once_with(["media", "remove", "--days", "3"])
+
+
+# ----------------------------------------------------------------------
+# Roles and the cluster/primary integrations
+# ----------------------------------------------------------------------
+
+
+def cluster_secret():
+    return testing.Secret(
+        tracked_content={"env": 'LOCAL_DOMAIN="social.example.com"\nDB_HOST="10.10.0.5"\n'},
+    )
+
+
+def primary_relation(secret, **extra):
+    data = {
+        "version": VERSION,
+        "hostname": HOSTNAME,
+        "secret-id": secret.id,
+        "migrated-version": VERSION,
+        "post-migrated-version": VERSION,
+    }
+    data.update(extra)
+    return testing.Relation(
+        endpoint="primary", remote_app_name="mastodon-main", remote_app_data=data
+    )
+
+
+def test_invalid_role_blocks(ctx, workload):
+    out = ctx.run(ctx.on.config_changed(), base_state(config={"role": "worker"}))
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "role" in out.unit_status.message
+
+
+def test_database_and_primary_relations_conflict(ctx, workload):
+    secret = cluster_secret()
+    state = base_state(extra_relations=(primary_relation(secret),))
+    state = testing.State(
+        leader=state.leader,
+        config=dict(state.config),
+        relations=state.relations,
+        secrets=state.secrets | {secret},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "both" in out.unit_status.message
+
+
+def test_auxiliary_sidekiq_flow(ctx, workload):
+    secret = cluster_secret()
+    relation = primary_relation(secret)
+    state = testing.State(
+        leader=True,
+        config={"role": "sidekiq"},
+        relations={testing.PeerRelation(endpoint="mastodon-peers"), relation},
+        secrets={secret},
+    )
+    out = ctx.run(ctx.on.relation_changed(relation), state)
+    # Env comes verbatim from the primary's shared secret.
+    workload["write_env_text"].assert_called_once_with(secret.tracked_content["env"])
+    workload["install_systemd_units"].assert_called_once()
+    assert workload["install_systemd_units"].call_args.kwargs["role"] == "sidekiq"
+    workload["disable_nginx"].assert_called_once()
+    workload["set_local_redis"].assert_called_once_with(enabled=False)
+    workload["prepare_database"].assert_not_called()
+    workload["run_migrations"].assert_not_called()
+    workload["enable_services"].assert_called_once_with("sidekiq")
+    assert not out.opened_ports
+    assert out.get_relation(relation.id).local_unit_data["active-version"] == VERSION
+    assert out.unit_status == testing.ActiveStatus("role: sidekiq")
+
+
+def test_auxiliary_waits_without_primary_data(ctx, workload):
+    relation = testing.Relation(endpoint="primary", remote_app_name="mastodon")
+    state = testing.State(
+        leader=True,
+        config={"role": "streaming"},
+        relations={testing.PeerRelation(endpoint="mastodon-peers"), relation},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    assert isinstance(out.unit_status, testing.WaitingStatus)
+    assert "primary" in out.unit_status.message
+    workload["restart_services"].assert_not_called()
+
+
+def test_primary_publishes_cluster_data(ctx, workload):
+    cluster = testing.Relation(endpoint="cluster", remote_app_name="mastodon-workers")
+    redis = testing.Relation(
+        endpoint="redis",
+        remote_app_name="redis",
+        remote_units_data={0: {"hostname": "10.20.0.7", "port": "6379"}},
+    )
+    s3 = testing.Relation(
+        endpoint="s3",
+        remote_app_name="s3-integrator",
+        remote_app_data={"bucket": "m", "access-key": "a", "secret-key": "s"},
+    )
+    out = ctx.run(ctx.on.config_changed(), base_state(extra_relations=(cluster, redis, s3)))
+    data = out.get_relation(cluster.id).local_app_data
+    assert data["version"] == VERSION
+    assert data["hostname"] == HOSTNAME
+    assert data["migrated-version"] == VERSION
+    assert data["secret-id"]
+    shared = out.get_secret(label="mastodon-cluster-env")
+    assert "DB_HOST" in shared.tracked_content["env"]
+
+
+def test_cluster_relation_requires_redis_and_s3(ctx, workload):
+    cluster = testing.Relation(endpoint="cluster", remote_app_name="mastodon-workers")
+    out = ctx.run(ctx.on.config_changed(), base_state(extra_relations=(cluster,)))
+    assert isinstance(out.unit_status, testing.BlockedStatus)
+    assert "redis" in out.unit_status.message and "s3" in out.unit_status.message
+
+
+def test_post_migrations_wait_for_auxiliaries(ctx, workload):
+    new_version = "v4.5.12"
+    workload["installed_version"].return_value = new_version
+    secret = app_secret()
+    peer = testing.PeerRelation(
+        endpoint="mastodon-peers",
+        local_app_data={
+            "secret-id": secret.id,
+            "migrated-version": VERSION,
+            "post-migrated-version": VERSION,
+        },
+    )
+    cluster = testing.Relation(
+        endpoint="cluster",
+        remote_app_name="mastodon-workers",
+        remote_units_data={0: {"active-version": VERSION}},  # still on the old release
+    )
+    redis = testing.Relation(
+        endpoint="redis",
+        remote_app_name="redis",
+        remote_units_data={0: {"hostname": "10.20.0.7", "port": "6379"}},
+    )
+    s3 = testing.Relation(
+        endpoint="s3",
+        remote_app_name="s3-integrator",
+        remote_app_data={"bucket": "m", "access-key": "a", "secret-key": "s"},
+    )
+    state = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME, "version": new_version},
+        relations={peer, db_relation(), cluster, redis, s3},
+        secrets={secret},
+    )
+    out = ctx.run(ctx.on.config_changed(), state)
+    # Pre-deployment migrations ran, but post waits for the aux app.
+    assert workload["run_migrations"].call_args_list == [
+        unittest.mock.call(skip_post_deployment=True)
+    ]
+    assert out.get_relation(peer.id).local_app_data["post-migrated-version"] == VERSION
+
+    # Once the auxiliary reports the new release, post migrations run.
+    cluster2 = testing.Relation(
+        endpoint="cluster",
+        remote_app_name="mastodon-workers",
+        remote_units_data={0: {"active-version": new_version}},
+    )
+    peer2 = testing.PeerRelation(
+        endpoint="mastodon-peers",
+        local_app_data={
+            "secret-id": secret.id,
+            "migrated-version": new_version,
+            "post-migrated-version": VERSION,
+        },
+    )
+    workload["run_migrations"].reset_mock()
+    state2 = testing.State(
+        leader=True,
+        config={"server-hostname": HOSTNAME, "version": new_version},
+        relations={peer2, db_relation(), cluster2, redis, s3},
+        secrets={secret},
+    )
+    out2 = ctx.run(ctx.on.relation_changed(cluster2), state2)
+    assert workload["run_migrations"].call_args_list == [unittest.mock.call()]
+    assert out2.get_relation(peer2.id).local_app_data["post-migrated-version"] == new_version

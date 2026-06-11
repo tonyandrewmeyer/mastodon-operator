@@ -30,15 +30,22 @@ ELASTICSEARCH_RELATION = "elasticsearch"
 CERTIFICATES_RELATION = "certificates"
 SMTP_RELATION = "smtp"
 WEBSITE_RELATION = "website"
+CLUSTER_RELATION = "cluster"
+PRIMARY_RELATION = "primary"
 DATABASE_NAME = "mastodon"
 SECRETS_LABEL = "mastodon-app-secrets"
+CLUSTER_SECRET_LABEL = "mastodon-cluster-env"
 MIGRATED_VERSION_KEY = "migrated-version"
 POST_MIGRATED_VERSION_KEY = "post-migrated-version"
 SECRET_ID_KEY = "secret-id"
+ACTIVE_VERSION_KEY = "active-version"
+HOSTNAME_KEY = "hostname"
+VERSION_KEY = "version"
 
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$")
 SMTP_ENCRYPTION_MODES = ("none", "starttls", "tls")
 ES_PRESETS = ("single_node_cluster", "small_cluster", "large_cluster")
+ROLES = ("all", "web", "sidekiq", "streaming")
 
 
 class MastodonCharm(ops.CharmBase):
@@ -105,6 +112,11 @@ class MastodonCharm(ops.CharmBase):
 
         framework.observe(self.on[WEBSITE_RELATION].relation_joined, self._reconcile)
 
+        framework.observe(self.on[CLUSTER_RELATION].relation_joined, self._reconcile)
+        framework.observe(self.on[CLUSTER_RELATION].relation_changed, self._reconcile)
+        framework.observe(self.on[PRIMARY_RELATION].relation_changed, self._reconcile)
+        framework.observe(self.on[PRIMARY_RELATION].relation_broken, self._on_primary_broken)
+
         framework.observe(self.on.media_storage_attached, self._on_media_storage_attached)
 
         framework.observe(self.on.create_admin_action, self._on_create_admin_action)
@@ -119,8 +131,21 @@ class MastodonCharm(ops.CharmBase):
     def _peer_relation(self) -> ops.Relation | None:
         return self.model.get_relation(PEER_RELATION)
 
+    @property
+    def _role(self) -> str:
+        return str(self.config["role"]).strip()
+
+    @property
+    def _is_auxiliary(self) -> bool:
+        """Whether this app follows a primary instead of owning the database."""
+        return self.model.get_relation(PRIMARY_RELATION) is not None
+
     def _invalid_config_reason(self) -> str | None:
         """Return a human-readable reason when config is invalid, else None."""
+        if self._role not in ROLES:
+            return f"role must be one of {', '.join(ROLES)}"
+        if self._is_auxiliary and self.model.get_relation(DATABASE_RELATION) is not None:
+            return "an application cannot have both the database and primary integrations"
         version = str(self.config["version"]).strip()
         if not VERSION_RE.match(version):
             return f'invalid version {version!r}, expected e.g. "v4.5.11"'
@@ -180,8 +205,13 @@ class MastodonCharm(ops.CharmBase):
         return cert, key
 
     def _missing_scaling_integrations(self) -> list[str]:
-        """Integrations required to run more than one unit but not present."""
-        if self.app.planned_units() <= 1:
+        """Integrations required to scale out but not present.
+
+        More than one unit, or any auxiliary application, means units no
+        longer share a machine: queues and media must live in external
+        Redis and S3.
+        """
+        if self.app.planned_units() <= 1 and not self.model.relations[CLUSTER_RELATION]:
             return []
         missing = []
         if self.model.get_relation(REDIS_RELATION) is None:
@@ -335,6 +365,10 @@ class MastodonCharm(ops.CharmBase):
         logger.warning("Database relation removed; stopping Mastodon services")
         mastodon.stop_services()
 
+    def _on_primary_broken(self, _event: ops.EventBase) -> None:
+        logger.warning("Primary relation removed; stopping Mastodon services")
+        mastodon.stop_services()
+
     # ------------------------------------------------------------------
     # Reconciliation
     # ------------------------------------------------------------------
@@ -342,12 +376,19 @@ class MastodonCharm(ops.CharmBase):
     def _reconcile(self, _event: ops.EventBase | None) -> None:
         """Converge the machine towards the desired state.
 
-        Each step is idempotent; the method simply returns early when a
-        prerequisite (config, secrets, database) is missing and the
-        collect-status handler reports why.
+        Each step is idempotent; the methods simply return early when a
+        prerequisite (config, secrets, database, primary data) is missing
+        and the collect-status handler reports why.
         """
         if self._invalid_config_reason():
             return
+        if self._is_auxiliary:
+            self._reconcile_auxiliary()
+        else:
+            self._reconcile_primary()
+
+    def _reconcile_primary(self) -> None:
+        """Converge an application that owns the database and secrets."""
         hostname = str(self.config["server-hostname"]).strip()
         if not hostname or self._missing_scaling_integrations():
             return
@@ -359,10 +400,7 @@ class MastodonCharm(ops.CharmBase):
             return
 
         version = str(self.config["version"]).strip()
-        release_changed = self._ensure_release(version)
-
         redis = self._redis_info()
-        s3 = self._s3_info()
         env = mastodon.render_env(
             hostname=hostname,
             web_domain=str(self.config["web-domain"]).strip(),
@@ -371,27 +409,14 @@ class MastodonCharm(ops.CharmBase):
             app_secrets=app_secrets,
             db=db,
             redis=redis,
-            s3=s3,
+            s3=self._s3_info(),
             smtp=self._smtp_config(),
             es=self._elasticsearch_info(),
             trusted_proxy_ips=str(self.config["trusted-proxy-ips"]).strip(),
             extra_env=str(self.config["extra-env"]),
         )
-        env_changed = mastodon.write_env_text(mastodon.env_file_text(env))
-        units_changed = mastodon.install_systemd_units(
-            web_concurrency=int(self.config["web-concurrency"]),
-            max_threads=int(self.config["max-threads"]),
-            sidekiq_concurrency=int(self.config["sidekiq-concurrency"]),
-        )
-
-        behind_proxy = bool(self.config["behind-proxy"])
-        if not behind_proxy:
-            # Precedence: relation-issued certificate, then config-provided,
-            # then a self-signed fallback (also used while a related
-            # certificate provider has not issued ours yet).
-            tls = self._relation_tls() or self._decoded_tls()
-            mastodon.ensure_tls_material(hostname, *(tls or (None, None)))
-        mastodon.configure_nginx(hostname=hostname, behind_proxy=behind_proxy)
+        env_text = mastodon.env_file_text(env)
+        needs_restart = self._apply_local_state(version=version, env_text=env_text)
 
         peer = self._peer_relation
         assert peer is not None  # checked via _app_secrets above
@@ -411,35 +436,158 @@ class MastodonCharm(ops.CharmBase):
 
         if self._migrated_version() == version:
             mastodon.set_local_redis(enabled=redis is None)
-            mastodon.enable_services()
-            running = mastodon.services_running()
-            if release_changed or env_changed or units_changed or not all(running.values()):
-                self.unit.status = ops.MaintenanceStatus("restarting Mastodon services")
-                mastodon.restart_services()
-            mastodon.configure_cleanup_timer(int(self.config["media-cache-retention-days"]))
+            self._start_or_restart(needs_restart)
+            if self.unit.is_leader() and self._role != "streaming":
+                mastodon.configure_cleanup_timer(int(self.config["media-cache-retention-days"]))
+            else:
+                mastodon.configure_cleanup_timer(0)
 
+        self._publish_cluster(version=version, env_text=env_text, hostname=hostname)
+
+        # Post-deployment migrations only once every unit in the cluster
+        # (including auxiliary applications) runs the new release.
         if (
             self.unit.is_leader()
             and self._migrated_version() == version
             and peer.data[self.app].get(POST_MIGRATED_VERSION_KEY) != version
+            and self._auxiliaries_on_version(version)
         ):
             self.unit.status = ops.MaintenanceStatus("running post-deployment migrations")
             mastodon.run_migrations()
             peer.data[self.app][POST_MIGRATED_VERSION_KEY] = version
 
-        self.unit.set_ports(80, 443)
+        self._finalize_unit(version)
+
+    def _reconcile_auxiliary(self) -> None:
+        """Converge an application that follows a primary."""
+        data = self._primary_data()
+        if data is None:
+            return
+        version, env_text = data[VERSION_KEY], data["env"]
+        needs_restart = self._apply_local_state(version=version, env_text=env_text)
+        mastodon.set_local_redis(enabled=False)
+        mastodon.configure_cleanup_timer(0)
+        if data.get(MIGRATED_VERSION_KEY) == version:
+            self._start_or_restart(needs_restart)
+            relation = self.model.get_relation(PRIMARY_RELATION)
+            assert relation is not None
+            relation.data[self.unit][ACTIVE_VERSION_KEY] = version
+        self._finalize_unit(version)
+
+    def _apply_local_state(self, *, version: str, env_text: str) -> bool:
+        """Install the release, env, units and nginx. True if restart needed."""
+        role = self._role
+        release_changed = self._ensure_release(version, role)
+        env_changed = mastodon.write_env_text(env_text)
+        units_changed = mastodon.install_systemd_units(
+            role=role,
+            web_concurrency=int(self.config["web-concurrency"]),
+            max_threads=int(self.config["max-threads"]),
+            sidekiq_concurrency=int(self.config["sidekiq-concurrency"]),
+        )
+        if role == "sidekiq":
+            mastodon.disable_nginx()
+        else:
+            hostname = self._serving_hostname() or "_"
+            behind_proxy = bool(self.config["behind-proxy"])
+            if not behind_proxy:
+                # Precedence: relation-issued certificate, then
+                # config-provided, then a self-signed fallback (also used
+                # while a related provider has not issued ours yet).
+                tls = self._relation_tls() or self._decoded_tls()
+                mastodon.ensure_tls_material(hostname, *(tls or (None, None)))
+            mastodon.configure_nginx(hostname=hostname, behind_proxy=behind_proxy, role=role)
+        return release_changed or env_changed or units_changed
+
+    def _serving_hostname(self) -> str | None:
+        """The instance hostname, from config or (for auxiliaries) the primary."""
+        hostname = str(self.config["server-hostname"]).strip()
+        if hostname:
+            return hostname
+        if self._is_auxiliary:
+            relation = self.model.get_relation(PRIMARY_RELATION)
+            if relation is not None and relation.app is not None:
+                return relation.data[relation.app].get(HOSTNAME_KEY)
+        return None
+
+    def _start_or_restart(self, needs_restart: bool) -> None:
+        role = self._role
+        mastodon.enable_services(role)
+        running = mastodon.services_running(role)
+        if needs_restart or not all(running.values()):
+            self.unit.status = ops.MaintenanceStatus("restarting Mastodon services")
+            mastodon.restart_services(role)
+
+    def _finalize_unit(self, version: str) -> None:
+        if self._role == "sidekiq":
+            self.unit.set_ports()
+        else:
+            self.unit.set_ports(80, 443)
         self.unit.set_workload_version(version.lstrip("v"))
         self._publish_website()
 
-    def _ensure_release(self, version: str) -> bool:
+    def _publish_cluster(self, *, version: str, env_text: str, hostname: str) -> None:
+        """Share env, version and migration state with auxiliary apps."""
+        if not self.unit.is_leader():
+            return
+        relations = self.model.relations[CLUSTER_RELATION]
+        if not relations:
+            return
+        try:
+            secret = self.model.get_secret(label=CLUSTER_SECRET_LABEL)
+            if secret.peek_content().get("env") != env_text:
+                secret.set_content({"env": env_text})
+        except ops.SecretNotFoundError:
+            secret = self.app.add_secret({"env": env_text}, label=CLUSTER_SECRET_LABEL)
+        peer = self._peer_relation
+        assert peer is not None
+        for relation in relations:
+            secret.grant(relation)
+            relation.data[self.app].update(
+                {
+                    VERSION_KEY: version,
+                    HOSTNAME_KEY: hostname,
+                    SECRET_ID_KEY: secret.id or "",
+                    MIGRATED_VERSION_KEY: peer.data[self.app].get(MIGRATED_VERSION_KEY, ""),
+                    POST_MIGRATED_VERSION_KEY: peer.data[self.app].get(
+                        POST_MIGRATED_VERSION_KEY, ""
+                    ),
+                }
+            )
+
+    def _primary_data(self) -> dict | None:
+        """Version, env text and state shared by the primary, or None."""
+        relation = self.model.get_relation(PRIMARY_RELATION)
+        if relation is None or relation.app is None:
+            return None
+        data = dict(relation.data[relation.app])
+        secret_id = data.get(SECRET_ID_KEY)
+        if not (data.get(VERSION_KEY) and data.get(HOSTNAME_KEY) and secret_id):
+            return None
+        try:
+            data["env"] = self.model.get_secret(id=secret_id).peek_content()["env"]
+        except (ops.SecretNotFoundError, ops.ModelError, KeyError):
+            logger.warning("Cannot read the cluster environment secret yet")
+            return None
+        return data
+
+    def _auxiliaries_on_version(self, version: str) -> bool:
+        """Whether every auxiliary unit reports running the given release."""
+        for relation in self.model.relations[CLUSTER_RELATION]:
+            for unit in relation.units:
+                if relation.data[unit].get(ACTIVE_VERSION_KEY) != version:
+                    return False
+        return True
+
+    def _ensure_release(self, version: str, role: str) -> bool:
         """Download, build and activate the requested release if needed."""
-        if not mastodon.is_release_built(version):
+        if not mastodon.is_release_built(version, role):
             self.unit.status = ops.MaintenanceStatus(f"downloading Mastodon {version}")
             mastodon.fetch_app(version)
             self.unit.status = ops.MaintenanceStatus(
                 f"building Mastodon {version} (this takes several minutes)"
             )
-            mastodon.build_app(version)
+            mastodon.build_app(version, role)
         changed = mastodon.activate_release(version)
         if changed:
             mastodon.prune_releases()
@@ -447,6 +595,8 @@ class MastodonCharm(ops.CharmBase):
 
     def _publish_website(self) -> None:
         """Expose our address on the website (http) interface for proxies."""
+        if self._role == "sidekiq":
+            return
         for relation in self.model.relations[WEBSITE_RELATION]:
             binding = self.model.get_binding(relation)
             if binding is None or binding.network.bind_address is None:
@@ -464,6 +614,12 @@ class MastodonCharm(ops.CharmBase):
         if reason:
             event.add_status(ops.BlockedStatus(reason))
             return
+        if self._is_auxiliary:
+            self._collect_auxiliary_status(event)
+        else:
+            self._collect_primary_status(event)
+
+    def _collect_primary_status(self, event: ops.CollectStatusEvent) -> None:
         if not str(self.config["server-hostname"]).strip():
             event.add_status(ops.BlockedStatus("server-hostname must be set"))
             return
@@ -471,7 +627,7 @@ class MastodonCharm(ops.CharmBase):
         if missing:
             event.add_status(
                 ops.BlockedStatus(
-                    f"scaling beyond 1 unit requires the {' and '.join(missing)} integration(s)"
+                    f"scaling out requires the {' and '.join(missing)} integration(s)"
                 )
             )
             return
@@ -485,18 +641,36 @@ class MastodonCharm(ops.CharmBase):
             event.add_status(ops.WaitingStatus("waiting for database credentials"))
             return
         version = str(self.config["version"]).strip()
+        self._collect_workload_status(event, version)
+
+    def _collect_auxiliary_status(self, event: ops.CollectStatusEvent) -> None:
+        data = self._primary_data()
+        if data is None:
+            event.add_status(ops.WaitingStatus("waiting for data from the primary application"))
+            return
+        self._collect_workload_status(event, data[VERSION_KEY])
+
+    def _collect_workload_status(self, event: ops.CollectStatusEvent, version: str) -> None:
         if mastodon.installed_version() != version:
             event.add_status(ops.MaintenanceStatus(f"Mastodon {version} not yet installed"))
             return
-        if self._migrated_version() != version:
+        if self._is_auxiliary:
+            data = self._primary_data() or {}
+            migrated = data.get(MIGRATED_VERSION_KEY)
+        else:
+            migrated = self._migrated_version()
+        if migrated != version:
             event.add_status(ops.WaitingStatus("waiting for database migrations"))
             return
-        running = mastodon.services_running()
+        running = mastodon.services_running(self._role)
         stopped = sorted(name for name, up in running.items() if not up)
         if stopped:
             event.add_status(ops.MaintenanceStatus(f"services not running: {', '.join(stopped)}"))
             return
-        event.add_status(ops.ActiveStatus())
+        if self._role == "all":
+            event.add_status(ops.ActiveStatus())
+        else:
+            event.add_status(ops.ActiveStatus(f"role: {self._role}"))
 
     # ------------------------------------------------------------------
     # Actions

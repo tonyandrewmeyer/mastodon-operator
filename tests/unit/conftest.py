@@ -39,6 +39,7 @@ SYSTEM_FUNCTIONS = {
     "run_migrations": None,
     "configure_cleanup_timer": None,
     "tootctl": "OK",
+    "disable_nginx": None,
 }
 
 
