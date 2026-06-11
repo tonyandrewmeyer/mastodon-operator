@@ -12,6 +12,7 @@ Environment="RAILS_ENV=production"
 Environment="DB_POOL={{ sidekiq_concurrency }}"
 Environment="MALLOC_ARENA_MAX=2"
 Environment="LD_PRELOAD=libjemalloc.so"
+Environment="MASTODON_PROMETHEUS_EXPORTER_PORT={{ sidekiq_metrics_port }}"
 ExecStart={{ rbenv_shims }}/bundle exec sidekiq -c {{ sidekiq_concurrency }}
 TimeoutSec=30
 Restart=always

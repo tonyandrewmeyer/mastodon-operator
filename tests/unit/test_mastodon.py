@@ -36,6 +36,8 @@ def test_render_env_basics():
     assert "WEB_DOMAIN" not in env
     assert "S3_ENABLED" not in env
     assert "SMTP_SERVER" not in env
+    assert env["MASTODON_PROMETHEUS_EXPORTER_ENABLED"] == "true"
+    assert env["MASTODON_PROMETHEUS_EXPORTER_LOCAL"] == "true"
 
 
 def test_render_env_redis_password():
@@ -177,6 +179,8 @@ def test_templates_render():
                 "web_concurrency": 2,
                 "max_threads": 5,
                 "sidekiq_concurrency": 25,
+                "web_metrics_port": 9394,
+                "sidekiq_metrics_port": 9395,
             },
         )
         assert f"Description={service}" in unit

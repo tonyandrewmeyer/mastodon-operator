@@ -50,12 +50,17 @@ class MastodonCharm(ops.CharmBase):
             self, relation_name=DATABASE_RELATION, database_name=DATABASE_NAME
         )
         self.s3 = S3Requirer(self, S3_RELATION, bucket_name=DATABASE_NAME)
-        # grafana-agent (subordinate) ships node metrics and machine logs to
-        # a COS stack and forwards our bundled alert rules.
+        # grafana-agent (subordinate) ships node metrics, machine logs and
+        # Mastodon's own Prometheus metrics to a COS stack, along with our
+        # bundled alert rules.
         self.cos_agent = COSAgentProvider(
             self,
             relation_name="cos-agent",
-            metrics_endpoints=[],
+            metrics_endpoints=[
+                {"path": "/metrics", "port": mastodon.WEB_METRICS_PORT},
+                {"path": "/metrics", "port": mastodon.SIDEKIQ_METRICS_PORT},
+                {"path": "/metrics", "port": mastodon.STREAMING_PORT},
+            ],
             refresh_events=[self.on.config_changed, self.on.upgrade_charm],
         )
 

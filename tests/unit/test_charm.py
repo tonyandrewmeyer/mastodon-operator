@@ -343,6 +343,13 @@ def test_cos_agent_relation_publishes_config(ctx, workload):
     alerts = [rule["alert"] for group in rules["groups"] for rule in group["rules"]]
     assert "MastodonHostLowDiskSpace" in alerts
     assert "MastodonHostLowMemory" in alerts
+    scrape_ports = {
+        int(target.rsplit(":", 1)[1])
+        for job in config["metrics_scrape_jobs"]
+        for static in job["static_configs"]
+        for target in static["targets"]
+    }
+    assert {9394, 9395, 4000} <= scrape_ports
 
 
 def test_scaling_requires_redis_and_s3(ctx, workload):

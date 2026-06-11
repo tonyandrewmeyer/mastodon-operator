@@ -13,6 +13,7 @@ Environment="PORT=3000"
 Environment="LD_PRELOAD=libjemalloc.so"
 Environment="WEB_CONCURRENCY={{ web_concurrency }}"
 Environment="MAX_THREADS={{ max_threads }}"
+Environment="MASTODON_PROMETHEUS_EXPORTER_PORT={{ web_metrics_port }}"
 ExecStart={{ rbenv_shims }}/bundle exec puma -C config/puma.rb
 ExecReload=/bin/kill -SIGUSR1 $MAINPID
 TimeoutSec=30

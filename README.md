@@ -127,9 +127,13 @@ juju integrate mastodon grafana-agent
 # then integrate grafana-agent with COS (typically via cross-model offers)
 ```
 
-Mastodon's own application metrics are exposed only as StatsD; pointing
-`STATSD_ADDR` (via `extra-env`) at a statsd-exporter is left to the
-operator for now.
+Mastodon's application metrics are exported natively: the charm enables
+Mastodon's built-in Prometheus exporters, and grafana-agent scrapes the
+web (Puma, port 9394), Sidekiq (port 9395) and streaming (port 4000)
+`/metrics` endpoints on localhost. Set
+`MASTODON_PROMETHEUS_EXPORTER_WEB_DETAILED_METRICS=true` (or the Sidekiq
+equivalent) via `extra-env` for per-action/per-job detail at the cost of
+some overhead.
 
 ### Scaling
 

@@ -54,6 +54,13 @@ TLS_KEY = TLS_DIR / "mastodon.key"
 SYSTEMD_DIR = Path("/etc/systemd/system")
 SERVICES = ("mastodon-web", "mastodon-sidekiq", "mastodon-streaming")
 
+# Local Prometheus metrics servers (scraped by grafana-agent via cos-agent).
+# Web and sidekiq each run a prometheus_exporter LocalServer; the streaming
+# server exposes /metrics on its main port.
+WEB_METRICS_PORT = 9394
+SIDEKIQ_METRICS_PORT = 9395
+STREAMING_PORT = 4000
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 # Build dependencies for Ruby and the native gems, plus Mastodon's runtime
@@ -134,6 +141,8 @@ MANAGED_ENV_KEYS = frozenset(
         "SMTP_TLS",
         "SMTP_ENABLE_STARTTLS",
         "TRUSTED_PROXY_IP",
+        "MASTODON_PROMETHEUS_EXPORTER_ENABLED",
+        "MASTODON_PROMETHEUS_EXPORTER_LOCAL",
         "RAILS_ENV",
         "NODE_ENV",
     }
@@ -555,6 +564,11 @@ def render_env(
         if es.get("preset"):
             env["ES_PRESET"] = es["preset"]
 
+    # Local Prometheus exporters, scraped through the cos-agent integration.
+    # The per-process ports are set in the systemd units.
+    env["MASTODON_PROMETHEUS_EXPORTER_ENABLED"] = "true"
+    env["MASTODON_PROMETHEUS_EXPORTER_LOCAL"] = "true"
+
     env.update(_smtp_env(smtp, hostname))
 
     if trusted_proxy_ips:
@@ -635,6 +649,8 @@ def install_systemd_units(
         "web_concurrency": web_concurrency,
         "max_threads": max_threads,
         "sidekiq_concurrency": sidekiq_concurrency,
+        "web_metrics_port": WEB_METRICS_PORT,
+        "sidekiq_metrics_port": SIDEKIQ_METRICS_PORT,
     }
     changed = False
     for service in SERVICES:
