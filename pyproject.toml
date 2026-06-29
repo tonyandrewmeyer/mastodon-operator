@@ -14,7 +14,7 @@ dependencies = [
     "charmlibs-passwd~=1.0",
     "charmlibs-systemd~=1.0",
     # For charms.grafana_agent.v0.cos_agent
-    "cosl>=0.0.50",
+    "cosl>=1.9.2",
     "pydantic>=2",
     # For charms.smtp_integrator.v0.smtp
     "email-validator>=2",
