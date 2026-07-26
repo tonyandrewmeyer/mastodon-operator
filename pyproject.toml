@@ -27,6 +27,7 @@ dev = [
     "coverage[toml]",
     "ruff",
     "pyright",
+    "zizmor>=1.28.0",
 ]
 integration = [
     "pytest",
