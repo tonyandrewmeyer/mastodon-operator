@@ -242,7 +242,7 @@ class MastodonCharm(ops.CharmBase):
         return secret.peek_content()
 
     def _database_info(self) -> dict | None:
-        """Connection info for PostgreSQL, or None when not (yet) available."""
+        """Return connection info for PostgreSQL, or None when not (yet) available."""
         for data in self.database.fetch_relation_data().values():
             endpoints = data.get("endpoints")
             username = data.get("username")
@@ -260,7 +260,7 @@ class MastodonCharm(ops.CharmBase):
         return None
 
     def _redis_info(self) -> dict | None:
-        """Connection info from the redis relation, or None when absent."""
+        """Return connection info from the redis relation, or None when absent."""
         relation = self.model.get_relation(REDIS_RELATION)
         if relation is None or relation.app is None:
             return None
@@ -286,7 +286,7 @@ class MastodonCharm(ops.CharmBase):
         return None
 
     def _elasticsearch_info(self) -> dict | None:
-        """Connection info from the elasticsearch relation, or None.
+        """Return connection info from the elasticsearch relation, or None.
 
         Supports the legacy elasticsearch interface (host/port in the remote
         unit databags) as well as providers publishing application data.
@@ -500,7 +500,7 @@ class MastodonCharm(ops.CharmBase):
         return release_changed or env_changed or units_changed
 
     def _serving_hostname(self) -> str | None:
-        """The instance hostname, from config or (for auxiliaries) the primary."""
+        """Return the instance hostname, from config or (for auxiliaries) the primary."""
         hostname = str(self.config["server-hostname"]).strip()
         if hostname:
             return hostname
