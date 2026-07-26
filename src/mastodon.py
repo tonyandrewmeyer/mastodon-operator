@@ -264,7 +264,7 @@ def install_packages() -> None:
     _setup_nodesource()
     apt.update()
     try:
-        apt.add_package(SYSTEM_PACKAGES + ["nodejs"])
+        apt.add_package([*SYSTEM_PACKAGES, "nodejs"])
     except apt.PackageNotFoundError as e:
         raise WorkloadError(f"failed to install packages: {e}") from e
     # Yarn 4 is provisioned through corepack, shipped with Node.js >= 16.
