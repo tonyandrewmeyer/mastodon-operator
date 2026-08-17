@@ -25,7 +25,7 @@ dev = [
     "ops[testing]",
     "pytest",
     "coverage[toml]",
-    "ruff>=0.16.0",
+    "ruff>=0.16.2",
     "pyright",
     "zizmor>=1.28.0",
 ]
